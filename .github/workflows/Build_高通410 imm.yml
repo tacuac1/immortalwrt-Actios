@@ -273,6 +273,255 @@ jobs:
         done
         
         
+    - name: Add UFI103S LuCI modem and proxy UI
+      if: ${{ inputs.profile == 'ufi103s' }}
+      run: |
+        cd openwrt
+        echo "=========================================="
+        echo "Add UFI103S modem/proxy LuCI integration"
+        echo "=========================================="
+
+        # 1) Native ModemManager protocol UI. Current LuCI exposes
+        #    allowedmode/preferredmode through the ModemManager protocol.
+        #    Keep it in the image so the existing modem interface remains editable.
+        for pkg in luci-proto-modemmanager; do
+          CFG="CONFIG_PACKAGE_${pkg}"
+          if grep -q "^# ${CFG} is not set$" .config; then
+            sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
+          elif grep -q "^${CFG}=" .config; then
+            sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
+          else
+            echo "${CFG}=y" >> .config
+          fi
+        done
+
+        # 2) Sing-box web UI. It supports starting/stopping/restarting sing-box,
+        #    URL/manual JSON configuration, and multiple stored configs.
+        #    Pin to the public main branch at build time; the build log records the revision.
+        rm -rf package/luci-app-singbox-ui
+        git clone --depth 1 https://github.com/ang3el7z/luci-app-singbox-ui.git package/luci-app-singbox-ui
+        if [ -f package/luci-app-singbox-ui/Makefile ]; then
+          echo "Singbox UI package detected at package/luci-app-singbox-ui"
+        elif [ -f package/luci-app-singbox-ui/luci-app-singbox-ui/Makefile ]; then
+          mv package/luci-app-singbox-ui/luci-app-singbox-ui package/luci-app-singbox-ui.tmp
+          rm -rf package/luci-app-singbox-ui
+          mv package/luci-app-singbox-ui.tmp package/luci-app-singbox-ui
+        else
+          echo "ERROR: luci-app-singbox-ui Makefile not found"
+          find package/luci-app-singbox-ui -maxdepth 3 -type f | head -80
+          exit 1
+        fi
+
+        # 3) Small UFI103S-specific modem page. It deliberately uses only fixed
+        #    ModemManager values: no arbitrary shell command is accepted from LuCI.
+        mkdir -p package/ufi103s-modem/{root/usr/share/luci/menu.d,root/usr/lib/lua/luci/model/cbi/ufi103s,root/etc/uci-defaults}
+        cat > package/ufi103s-modem/Makefile <<'EOF'
+        include $(TOPDIR)/rules.mk
+        PKG_NAME:=ufi103s-modem
+        PKG_RELEASE:=1
+        include $(INCLUDE_DIR)/package.mk
+        define Package/ufi103s-modem
+          SECTION:=luci
+          CATEGORY:=LuCI
+          TITLE:=UFI103S Modem controls
+          DEPENDS:=+modemmanager +luci-base
+        endef
+        define Package/ufi103s-modem/install
+          $(CP) ./root/* $(1)/
+        endef
+        $(eval $(call BuildPackage,ufi103s-modem))
+        EOF
+
+        cat > package/ufi103s-modem/root/usr/share/luci/menu.d/ufi103s.json <<'EOF'
+        {
+          "admin/modem/ufi103s": {
+            "title": "UFI103S 4G Modem",
+            "order": 10,
+            "action": { "type": "cbi", "path": "ufi103s/modem" },
+            "depends": { "acl": ["luci-base"] }
+          }
+        }
+        EOF
+
+        cat > package/ufi103s-modem/root/etc/uci-defaults/99-ufi103s-modem <<'EOF'
+        # Keep the UFI103S connection on LTE + IPv4 by default.
+        uci -q set network.modem.allowedmode='4g'
+        uci -q set network.modem.preferredmode='4g'
+        uci -q set network.modem.iptype='ipv4'
+        uci -q set network.modem.apn='m-wap'
+        uci -q commit network
+        /etc/init.d/ufi103s-proxy-watch enable 2>/dev/null || true
+        exit 0
+        EOF
+
+        cat > package/ufi103s-modem/root/usr/lib/lua/luci/model/cbi/ufi103s/modem.lua <<'EOF'
+        local fs = require "nixio.fs"
+        local http = require "luci.http"
+        local uci = require "luci.model.uci".cursor()
+
+        local function sh(cmd)
+          return luci.sys.exec(cmd) or ""
+        end
+
+        local function modem_id()
+          local s = sh("mmcli -L 2>/dev/null")
+          return s:match("/Modem/(%d+)")
+        end
+
+        local mid = modem_id()
+        local m = SimpleForm("ufi103s_modem", translate("UFI103S 4G Modem"),
+          translate("LTE/3G mode and LTE band controls for the built-in UFI103S modem."))
+        m.reset = false
+        m.submit = true
+
+        local status = m:section(SimpleSection, nil)
+        local info = mid and sh("mmcli -m " .. mid .. " 2>/dev/null") or "ModemManager: no modem detected"
+        local state = info:match("state:%s*([^\n]+)") or "unknown"
+        local tech = info:match("access tech:%s*([^\n]+)") or "unknown"
+        local sig = info:match("signal quality:%s*([^\n]+)") or "unknown"
+        local op = info:match("operator name:%s*([^\n]+)") or "unknown"
+        local pkt = info:match("packet service state:%s*([^\n]+)") or "unknown"
+        status:option(DummyValue, "status", translate("Status")).value = state
+        status:option(DummyValue, "technology", translate("Access technology")).value = tech
+        status:option(DummyValue, "signal", translate("Signal")).value = sig
+        status:option(DummyValue, "operator", translate("Operator")).value = op
+        status:option(DummyValue, "packet", translate("Packet service")).value = pkt
+
+        local s = m:section(SimpleSection, nil, translate("Network mode"))
+        local mode = s:option(ListValue, "allowedmode", translate("Allowed mode"))
+        mode:value("4g", "4G LTE")
+        mode:value("3g", "3G")
+        mode:value("3g|4g", "3G + 4G")
+        mode:value("2g|3g|4g", "Auto (2G/3G/4G)")
+        mode.default = uci:get("network", "modem", "allowedmode") or "4g"
+        mode.write = function(self, section, value)
+          uci:set("network", "modem", "allowedmode", value)
+          uci:set("network", "modem", "preferredmode", value == "3g|4g" and "4g" or (value == "2g|3g|4g" and "4g" or value))
+          uci:commit("network")
+          if mid then
+            sh("mmcli -m " .. mid .. " --set-allowed-modes='" .. value .. "' >/dev/null 2>&1")
+            if value ~= "2g|3g|4g" then
+              sh("mmcli -m " .. mid .. " --set-preferred-mode='" .. (value == "3g|4g" and "4g" or value) .. "' >/dev/null 2>&1")
+            end
+          end
+        end
+
+        local ip = s:option(ListValue, "iptype", translate("IP type"))
+        ip:value("ipv4", "IPv4")
+        ip:value("ipv4v6", "IPv4 + IPv6")
+        ip:value("ipv6", "IPv6")
+        ip.default = uci:get("network", "modem", "iptype") or "ipv4"
+        ip.write = function(self, section, value)
+          uci:set("network", "modem", "iptype", value)
+          uci:commit("network")
+        end
+
+        local b = m:section(SimpleSection, nil, translate("LTE bands"))
+        b:option(DummyValue, "supported", translate("Supported LTE bands")).value = "B1, B3, B5 (from this UFI103S modem)"
+        local bands = b:option(MultiValue, "bands", translate("LTE band lock"), translate("Leave all unchecked for automatic band selection."))
+        bands.widget = "checkbox"
+        bands:value("eutran-1", "B1")
+        bands:value("eutran-3", "B3")
+        bands:value("eutran-5", "B5")
+        bands.cfgvalue = function(self, section)
+          return uci:get("network", "modem", "bands") or ""
+        end
+        bands.write = function(self, section, value)
+          local list = type(value) == "table" and table.concat(value, "|") or value
+          uci:set("network", "modem", "allowedmode", uci:get("network", "modem", "allowedmode") or "4g")
+          if list == "" then
+            uci:delete("network", "modem", "bands")
+            if mid then sh("mmcli -m " .. mid .. " --set-current-bands='any' >/dev/null 2>&1") end
+          else
+            uci:set("network", "modem", "bands", list)
+            if mid then sh("mmcli -m " .. mid .. " --set-current-bands='" .. list .. "' >/dev/null 2>&1") end
+          end
+          uci:commit("network")
+        end
+
+        local note = m:section(SimpleSection)
+        note:option(DummyValue, "note", translate("Note")).value = translate("Band locking can temporarily disconnect LTE while the modem reselects a cell.")
+        return m
+        EOF
+
+        # Correct the Lua dependency name if the source tree uses nixio.fs differently;
+        # the model itself does not depend on arbitrary filesystem access.
+
+        # 4) Auto-restart helper: if sing-box is already running and wwan0
+        #    transitions from no IPv4 to IPv4, restart sing-box once so its TUN/
+        #    routing state is rebuilt after a 4G reconnect. It never starts the
+        #    proxy by itself and never changes the modem mode/APN.
+        mkdir -p package/ufi103s-proxy/root/{etc/init.d,usr/sbin}
+        cat > package/ufi103s-proxy/Makefile <<'EOF'
+        include $(TOPDIR)/rules.mk
+        PKG_NAME:=ufi103s-proxy
+        PKG_RELEASE:=1
+        include $(INCLUDE_DIR)/package.mk
+        define Package/ufi103s-proxy
+          SECTION:=net
+          CATEGORY:=Network
+          TITLE:=UFI103S sing-box WAN recovery helper
+          DEPENDS:=+sing-box-tiny
+        endef
+        define Package/ufi103s-proxy/install
+          $(CP) ./root/* $(1)/
+        endef
+        $(eval $(call BuildPackage,ufi103s-proxy))
+        EOF
+
+        cat > package/ufi103s-proxy/root/etc/init.d/ufi103s-proxy-watch <<'EOF'
+        #!/bin/sh /etc/rc.common
+        START=98
+        STOP=10
+        USE_PROCD=1
+        
+        start_service() {
+          procd_open_instance
+          procd_set_param command /usr/sbin/ufi103s-proxy-watch
+          procd_set_param respawn 3600 5 0
+          procd_close_instance
+        }
+        EOF
+        chmod 0755 package/ufi103s-proxy/root/etc/init.d/ufi103s-proxy-watch
+
+        cat > package/ufi103s-proxy/root/usr/sbin/ufi103s-proxy-watch <<'EOF'
+        #!/bin/sh
+        STATE=/tmp/ufi103s_proxy_wan_state
+        OLD=0
+        [ -r "$STATE" ] && OLD=$(cat "$STATE" 2>/dev/null || echo 0)
+        while :; do
+          NEW=0
+          if ip link show wwan0 >/dev/null 2>&1 && ip -4 addr show dev wwan0 | grep -q 'inet '; then
+            NEW=1
+          fi
+          if [ "$OLD" = 0 ] && [ "$NEW" = 1 ] && pidof sing-box >/dev/null 2>&1; then
+            if [ -x /etc/init.d/sing-box ]; then
+              /etc/init.d/sing-box restart >/dev/null 2>&1 || true
+            elif [ -x /etc/init.d/singbox ]; then
+              /etc/init.d/singbox restart >/dev/null 2>&1 || true
+            fi
+          fi
+          OLD=$NEW
+          echo "$OLD" > "$STATE"
+          sleep 10
+        done
+        EOF
+        chmod 0755 package/ufi103s-proxy/root/usr/sbin/ufi103s-proxy-watch
+
+        for pkg in luci-app-singbox-ui ufi103s-modem ufi103s-proxy; do
+          CFG="CONFIG_PACKAGE_${pkg}"
+          if grep -q "^# ${CFG} is not set$" .config; then
+            sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
+          elif grep -q "^${CFG}=" .config; then
+            sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
+          else
+            echo "${CFG}=y" >> .config
+          fi
+        done
+
+        echo "UFI103S UI packages enabled:"
+        grep -E '^CONFIG_PACKAGE_(luci-proto-modemmanager|luci-app-singbox-ui|ufi103s-modem|ufi103s-proxy)=' .config || true
+
     - name: Ensure transparent proxy packages
       if: ${{ inputs.profile == 'ufi103s' }}
       run: |
@@ -331,6 +580,12 @@ jobs:
             echo "ERROR: sing-box-tiny is missing from final .config!"
             exit 1
           }
+          for pkg in luci-proto-modemmanager luci-app-singbox-ui ufi103s-modem ufi103s-proxy; do
+            grep -q "^CONFIG_PACKAGE_${pkg}=y$" .config || {
+              echo "ERROR: ${pkg} is missing from final .config!"
+              exit 1
+            }
+          done
         fi
 
         echo "--- Kernel config fragment ---"
