@@ -298,19 +298,28 @@ jobs:
         # 2) Sing-box web UI. It supports starting/stopping/restarting sing-box,
         #    URL/manual JSON configuration, and multiple stored configs.
         #    Pin to the public main branch at build time; the build log records the revision.
-        rm -rf package/luci-app-singbox-ui
-        git clone --depth 1 https://github.com/ang3el7z/luci-app-singbox-ui.git package/luci-app-singbox-ui
-        if [ -f package/luci-app-singbox-ui/Makefile ]; then
-          echo "Singbox UI package detected at package/luci-app-singbox-ui"
-        elif [ -f package/luci-app-singbox-ui/luci-app-singbox-ui/Makefile ]; then
-          mv package/luci-app-singbox-ui/luci-app-singbox-ui package/luci-app-singbox-ui.tmp
-          rm -rf package/luci-app-singbox-ui
-          mv package/luci-app-singbox-ui.tmp package/luci-app-singbox-ui
+        # Git clone can fail on GitHub Actions runners with a credential-helper
+        # prompt even for a public repository. Use the GitHub codeload tarball
+        # instead; it does not invoke git authentication and is retryable.
+        rm -rf package/luci-app-singbox-ui /tmp/luci-app-singbox-ui.tar.gz /tmp/luci-app-singbox-ui-src
+        mkdir -p /tmp/luci-app-singbox-ui-src
+        curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
+          -o /tmp/luci-app-singbox-ui.tar.gz \
+          https://codeload.github.com/ang3el7z/luci-app-singbox-ui/tar.gz/refs/heads/main
+        tar -xzf /tmp/luci-app-singbox-ui.tar.gz -C /tmp/luci-app-singbox-ui-src
+        SRC_DIR=$(find /tmp/luci-app-singbox-ui-src -mindepth 1 -maxdepth 1 -type d | head -1)
+        [ -n "$SRC_DIR" ] || { echo "ERROR: Singbox UI archive extracted no source directory"; exit 1; }
+        if [ -f "$SRC_DIR/luci-app-singbox-ui/Makefile" ]; then
+          cp -a "$SRC_DIR/luci-app-singbox-ui" package/luci-app-singbox-ui
+        elif [ -f "$SRC_DIR/Makefile" ]; then
+          cp -a "$SRC_DIR" package/luci-app-singbox-ui
         else
-          echo "ERROR: luci-app-singbox-ui Makefile not found"
-          find package/luci-app-singbox-ui -maxdepth 3 -type f | head -80
+          echo "ERROR: luci-app-singbox-ui Makefile not found in archive"
+          find "$SRC_DIR" -maxdepth 3 -type f | head -100
           exit 1
         fi
+        echo "Singbox UI package detected at package/luci-app-singbox-ui"
+        rm -rf /tmp/luci-app-singbox-ui.tar.gz /tmp/luci-app-singbox-ui-src
 
         # 3) Small UFI103S-specific modem page. It deliberately uses only fixed
         #    ModemManager values: no arbitrary shell command is accepted from LuCI.
