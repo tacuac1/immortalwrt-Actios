@@ -335,6 +335,13 @@ jobs:
           TITLE:=UFI103S Modem controls
           DEPENDS:=+modemmanager +luci-base
         endef
+        # This is a files-only package. Do NOT run OpenWrt's default
+        # Build/Compile, because there is no source tree/Makefile in
+        # $(PKG_BUILD_DIR). The previous workflow failed exactly here with
+        # "No targets specified and no makefile found".
+        define Build/Compile
+        endef
+
         define Package/ufi103s-modem/install
           $(CP) ./root/* $(1)/
         endef
@@ -472,6 +479,9 @@ jobs:
           TITLE:=UFI103S sing-box WAN recovery helper
           DEPENDS:=+sing-box-tiny
         endef
+        define Build/Compile
+        endef
+
         define Package/ufi103s-proxy/install
           $(CP) ./root/* $(1)/
         endef
@@ -532,6 +542,13 @@ jobs:
 
         echo "UFI103S UI packages enabled:"
         grep -E '^CONFIG_PACKAGE_(luci-proto-modemmanager|luci-app-homeproxy|ufi103s-modem|ufi103s-proxy)=' .config || true
+
+        echo "Validating custom package Makefiles:"
+        test -s package/ufi103s-modem/Makefile
+        test -s package/ufi103s-proxy/Makefile
+        grep -q 'define Build/Compile' package/ufi103s-modem/Makefile
+        grep -q 'define Build/Compile' package/ufi103s-proxy/Makefile
+        echo "Custom files-only package validation: PASS"
 
     - name: Ensure transparent proxy packages
       if: ${{ inputs.profile == 'ufi103s' }}
