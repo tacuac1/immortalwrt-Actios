@@ -295,31 +295,31 @@ jobs:
           fi
         done
 
-        # 2) Sing-box web UI. It supports starting/stopping/restarting sing-box,
-        #    URL/manual JSON configuration, and multiple stored configs.
-        #    Pin to the public main branch at build time; the build log records the revision.
-        # Git clone can fail on GitHub Actions runners with a credential-helper
-        # prompt even for a public repository. Use the GitHub codeload tarball
-        # instead; it does not invoke git authentication and is retryable.
-        rm -rf package/luci-app-singbox-ui /tmp/luci-app-singbox-ui.tar.gz /tmp/luci-app-singbox-ui-src
-        mkdir -p /tmp/luci-app-singbox-ui-src
-        curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
-          -o /tmp/luci-app-singbox-ui.tar.gz \
-          https://codeload.github.com/ang3el7z/luci-app-singbox-ui/tar.gz/refs/heads/main
-        tar -xzf /tmp/luci-app-singbox-ui.tar.gz -C /tmp/luci-app-singbox-ui-src
-        SRC_DIR=$(find /tmp/luci-app-singbox-ui-src -mindepth 1 -maxdepth 1 -type d | head -1)
-        [ -n "$SRC_DIR" ] || { echo "ERROR: Singbox UI archive extracted no source directory"; exit 1; }
-        if [ -f "$SRC_DIR/luci-app-singbox-ui/Makefile" ]; then
-          cp -a "$SRC_DIR/luci-app-singbox-ui" package/luci-app-singbox-ui
-        elif [ -f "$SRC_DIR/Makefile" ]; then
-          cp -a "$SRC_DIR" package/luci-app-singbox-ui
-        else
-          echo "ERROR: luci-app-singbox-ui Makefile not found in archive"
-          find "$SRC_DIR" -maxdepth 3 -type f | head -100
+        # 2) Use the official ImmortalWrt HomeProxy LuCI application instead of
+        #    luci-app-singbox-ui. HomeProxy is a sing-box client for OpenWrt and
+        #    supports VLESS/VMess, node/subscription management and transparent
+        #    proxy modes. Avoid the broken third-party codeload URL entirely.
+        rm -rf package/luci-app-homeproxy /tmp/homeproxy
+        export GIT_TERMINAL_PROMPT=0
+        for n in 1 2 3; do
+          rm -rf /tmp/homeproxy
+          if git -c credential.helper= -c core.askPass= clone --depth 1 --single-branch \
+            https://github.com/immortalwrt/homeproxy.git /tmp/homeproxy; then
+            break
+          fi
+          echo "HomeProxy clone failed (attempt $n/3)"
+          sleep 5
+        done
+        [ -f /tmp/homeproxy/Makefile ] || {
+          echo "ERROR: ImmortalWrt HomeProxy clone failed after 3 attempts"
           exit 1
-        fi
-        echo "Singbox UI package detected at package/luci-app-singbox-ui"
-        rm -rf /tmp/luci-app-singbox-ui.tar.gz /tmp/luci-app-singbox-ui-src
+        }
+        cp -a /tmp/homeproxy package/luci-app-homeproxy
+        # HomeProxy only needs the sing-box executable; use the existing tiny
+        # variant already built for this Snapdragon 410 device.
+        sed -i 's/+sing-box/+sing-box-tiny/' package/luci-app-homeproxy/Makefile
+        echo "HomeProxy package detected at package/luci-app-homeproxy"
+        rm -rf /tmp/homeproxy
 
         # 3) Small UFI103S-specific modem page. It deliberately uses only fixed
         #    ModemManager values: no arbitrary shell command is accepted from LuCI.
@@ -504,7 +504,9 @@ jobs:
             NEW=1
           fi
           if [ "$OLD" = 0 ] && [ "$NEW" = 1 ] && pidof sing-box >/dev/null 2>&1; then
-            if [ -x /etc/init.d/sing-box ]; then
+            if [ -x /etc/init.d/homeproxy ]; then
+              /etc/init.d/homeproxy restart >/dev/null 2>&1 || true
+            elif [ -x /etc/init.d/sing-box ]; then
               /etc/init.d/sing-box restart >/dev/null 2>&1 || true
             elif [ -x /etc/init.d/singbox ]; then
               /etc/init.d/singbox restart >/dev/null 2>&1 || true
@@ -517,7 +519,7 @@ jobs:
         EOF
         chmod 0755 package/ufi103s-proxy/root/usr/sbin/ufi103s-proxy-watch
 
-        for pkg in luci-app-singbox-ui ufi103s-modem ufi103s-proxy; do
+        for pkg in luci-app-homeproxy luci-i18n-homeproxy-zh-cn ufi103s-modem ufi103s-proxy; do
           CFG="CONFIG_PACKAGE_${pkg}"
           if grep -q "^# ${CFG} is not set$" .config; then
             sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
@@ -529,7 +531,7 @@ jobs:
         done
 
         echo "UFI103S UI packages enabled:"
-        grep -E '^CONFIG_PACKAGE_(luci-proto-modemmanager|luci-app-singbox-ui|ufi103s-modem|ufi103s-proxy)=' .config || true
+        grep -E '^CONFIG_PACKAGE_(luci-proto-modemmanager|luci-app-homeproxy|ufi103s-modem|ufi103s-proxy)=' .config || true
 
     - name: Ensure transparent proxy packages
       if: ${{ inputs.profile == 'ufi103s' }}
@@ -589,7 +591,7 @@ jobs:
             echo "ERROR: sing-box-tiny is missing from final .config!"
             exit 1
           }
-          for pkg in luci-proto-modemmanager luci-app-singbox-ui ufi103s-modem ufi103s-proxy; do
+          for pkg in luci-proto-modemmanager luci-app-homeproxy ufi103s-modem ufi103s-proxy; do
             grep -q "^CONFIG_PACKAGE_${pkg}=y$" .config || {
               echo "ERROR: ${pkg} is missing from final .config!"
               exit 1
