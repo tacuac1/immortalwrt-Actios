@@ -143,6 +143,9 @@ jobs:
           echo "upstream_lock.txt 不存在，使用最新 master"
         fi
 
+    - name: Configure Git
+      run: git config --global http.postBuffer 524288000
+
     - name: Clone source code
       working-directory: /mnt
       run: |
@@ -183,6 +186,39 @@ jobs:
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: Enable IPv4 policy routing
+      run: |
+        cd openwrt
+
+        echo "=========================================="
+        echo "Enable IPv4 policy routing for UFI103S"
+        echo "=========================================="
+
+        KERNEL_CONFIG="target/linux/generic/config-6.12"
+
+        if [ ! -f "$KERNEL_CONFIG" ]; then
+          echo "ERROR: $KERNEL_CONFIG not found!"
+          exit 1
+        fi
+
+        echo "Using kernel config: $KERNEL_CONFIG"
+
+        # Remove old/conflicting values first.
+        sed -i '/^CONFIG_IP_ADVANCED_ROUTER=/d' "$KERNEL_CONFIG"
+        sed -i '/^# CONFIG_IP_ADVANCED_ROUTER is not set$/d' "$KERNEL_CONFIG"
+        sed -i '/^CONFIG_IP_MULTIPLE_TABLES=/d' "$KERNEL_CONFIG"
+        sed -i '/^# CONFIG_IP_MULTIPLE_TABLES is not set$/d' "$KERNEL_CONFIG"
+
+        # Enable IPv4 advanced routing and multiple routing tables.
+        echo 'CONFIG_IP_ADVANCED_ROUTER=y' >> "$KERNEL_CONFIG"
+        echo 'CONFIG_IP_MULTIPLE_TABLES=y' >> "$KERNEL_CONFIG"
+
+        echo "Kernel policy routing configuration:"
+        grep -E '^CONFIG_IP_(ADVANCED_ROUTER|MULTIPLE_TABLES)=' "$KERNEL_CONFIG"
+
+        test "$(grep -c '^CONFIG_IP_ADVANCED_ROUTER=y$' "$KERNEL_CONFIG")" -eq 1
+        test "$(grep -c '^CONFIG_IP_MULTIPLE_TABLES=y$' "$KERNEL_CONFIG")" -eq 1
 
     - name: Install extra packages
       if: ${{ inputs.extra_packages != '' }}
@@ -237,6 +273,30 @@ jobs:
         done
         
         
+    - name: Ensure transparent proxy packages
+      if: ${{ inputs.profile == 'ufi103s' }}
+      run: |
+        cd openwrt
+
+        echo "=========================================="
+        echo "Ensure UFI103S transparent proxy packages"
+        echo "=========================================="
+
+        for pkg in           sing-box-tiny           kmod-tun           kmod-nft-tproxy           kmod-nft-socket           kmod-wireguard           wireguard-tools           luci-proto-wireguard
+        do
+          CFG="CONFIG_PACKAGE_${pkg}"
+          if grep -q "^# ${CFG} is not set$" .config; then
+            sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
+          elif grep -q "^${CFG}=" .config; then
+            sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
+          else
+            echo "${CFG}=y" >> .config
+          fi
+        done
+
+        echo "Required UFI103S packages before defconfig:"
+        grep -E '^CONFIG_PACKAGE_(sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket|kmod-wireguard|wireguard-tools|luci-proto-wireguard)=' .config || true
+
     - name: SSH 调试有效时间6h! 连接后输入q 输入exit即可退出，自动继续后续编译流程
       uses: mxschmitt/action-tmate@master
       if: ${{ inputs.ssh || contains(github.event.action, 'ssh') }}
@@ -245,8 +305,65 @@ jobs:
     - name: Config defconfig
       id: config
       run: |
-       cd openwrt
-       make defconfig
+        cd openwrt
+
+        echo "=========================================="
+        echo "Running OpenWrt defconfig"
+        echo "=========================================="
+
+        make defconfig
+
+        echo "=========================================="
+        echo "Checking final OpenWrt configuration"
+        echo "=========================================="
+
+        echo "--- Target device ---"
+        grep -E '^CONFIG_TARGET.*DEVICE.*=y' .config || {
+          echo "ERROR: target device is missing!"
+          exit 1
+        }
+
+        echo "--- sing-box ---"
+        grep -E '^CONFIG_PACKAGE_sing-box(-tiny)?=' .config || true
+
+        if [ "${{ inputs.profile }}" = "ufi103s" ]; then
+          grep -q '^CONFIG_PACKAGE_sing-box-tiny=y$' .config || {
+            echo "ERROR: sing-box-tiny is missing from final .config!"
+            exit 1
+          }
+        fi
+
+        echo "--- Kernel config fragment ---"
+        KERNEL_CONFIG="target/linux/generic/config-6.12"
+
+        if [ ! -f "$KERNEL_CONFIG" ]; then
+          echo "ERROR: $KERNEL_CONFIG not found!"
+          exit 1
+        fi
+
+        grep -E '^CONFIG_IP_(ADVANCED_ROUTER|MULTIPLE_TABLES)=' "$KERNEL_CONFIG" || {
+          echo "ERROR: IPv4 policy routing options are missing!"
+          exit 1
+        }
+
+        test "$(grep -c '^CONFIG_IP_ADVANCED_ROUTER=y$' "$KERNEL_CONFIG")" -eq 1 || {
+          echo "ERROR: CONFIG_IP_ADVANCED_ROUTER is not exactly y!"
+          exit 1
+        }
+
+        test "$(grep -c '^CONFIG_IP_MULTIPLE_TABLES=y$' "$KERNEL_CONFIG")" -eq 1 || {
+          echo "ERROR: CONFIG_IP_MULTIPLE_TABLES is not exactly y!"
+          exit 1
+        }
+
+        echo "=========================================="
+        echo "Final IPv4 policy routing options:"
+        echo "=========================================="
+        grep -E '^CONFIG_IP_(ADVANCED_ROUTER|MULTIPLE_TABLES)=' "$KERNEL_CONFIG"
+
+        echo "=========================================="
+        echo "Configuration check completed successfully"
+        echo "=========================================="
        
     - name: Download package
       id: package
@@ -295,9 +412,6 @@ jobs:
       if: (!cancelled())
       run: df -hT
 
-    - name: Fix Git buffer
-      run: git config --global http.postBuffer 524288000
-
     - name: Upload bin directory
       uses: actions/upload-artifact@main
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
@@ -330,7 +444,12 @@ jobs:
         rm flash_package/boot.img.gz flash_package/system.img.gz
         cp -r $GITHUB_WORKSPACE/刷机脚本/. flash_package/
         # 确保 bat 文件是 CRLF 换行（Windows 兼容）
-        unix2dos flash_package/*.bat 2>/dev/null || sed -i 's/\r//' flash_package/*.bat && sed -i 's/$/\r/' flash_package/*.bat
+        if command -v unix2dos >/dev/null 2>&1; then
+          unix2dos flash_package/*.bat
+        else
+          sed -i 's/\r$//' flash_package/*.bat
+          sed -i 's/$/\r/' flash_package/*.bat
+        fi
         ZIP_NAME="OpenWrt_${PROFILE}${{ env.FILE_DATE }}_刷机包.zip"
         cd flash_package && zip -r "../$ZIP_NAME" . && cd ..
 
