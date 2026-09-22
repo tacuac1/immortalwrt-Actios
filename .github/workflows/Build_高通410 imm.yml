@@ -196,8 +196,19 @@ jobs:
             exit 1
           fi
 
+          echo "=== Rebuild package metadata after opkg repair ==="
+          rm -f tmp/.packagedeps tmp/.packageinfo tmp/.targetinfo
+          rm -rf tmp/info tmp/packageinfo
+
           echo "=== Prepare non-interactive configuration ==="
           make defconfig
+
+          echo "=== Rebuild package metadata ==="
+          make package/metadata V=s
+
+          echo "=== Verify opkg host target exists ==="
+          make -n package/system/opkg/host/compile >/tmp/opkg-host-target.txt
+          cat /tmp/opkg-host-target.txt | tail -n 20
 
           echo "=== Test opkg host target ==="
           make package/system/opkg/host/compile V=s
