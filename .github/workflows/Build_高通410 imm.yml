@@ -144,10 +144,33 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
 
-      - name: Repair opkg host build
+      - name: Load UFI-001C configuration
         working-directory: ${{ github.workspace }}/openwrt
         run: |
+          if [ -f "$GITHUB_WORKSPACE/config/ufi001c.config" ]; then
+            cp "$GITHUB_WORKSPACE/config/ufi001c.config" .config
+          else
+            echo "::error::config/ufi001c.config not found"
+            exit 1
+          fi
+
+          grep -E \
+            '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c|^CONFIG_DEFAULT_qcom-msm8916-modem-openstick-ufi001c-firmware|^CONFIG_DEFAULT_qcom-msm8916-openstick-ufi001c-wcnss-firmware|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv' \
+            .config || true
+
+          if [ -f "$GITHUB_WORKSPACE/diy-part2.sh" ]; then
+            chmod +x "$GITHUB_WORKSPACE/diy-part2.sh"
+            "$GITHUB_WORKSPACE/diy-part2.sh"
+          fi
+
+
+      - name: Repair opkg host build
+        working-directory: ${{ github.workspace }}/openwrt
+        env:
+          TERM: xterm
+        run: |
           set -e
+          export TERM=xterm
           echo "=== Checking opkg host build support ==="
           OPKG_MK="package/system/opkg/Makefile"
 
@@ -173,27 +196,11 @@ jobs:
             exit 1
           fi
 
+          echo "=== Prepare non-interactive configuration ==="
+          make defconfig
+
           echo "=== Test opkg host target ==="
           make package/system/opkg/host/compile V=s
-
-      - name: Load UFI-001C configuration
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          if [ -f "$GITHUB_WORKSPACE/config/ufi001c.config" ]; then
-            cp "$GITHUB_WORKSPACE/config/ufi001c.config" .config
-          else
-            echo "::error::config/ufi001c.config not found"
-            exit 1
-          fi
-
-          grep -E \
-            '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c|^CONFIG_DEFAULT_qcom-msm8916-modem-openstick-ufi001c-firmware|^CONFIG_DEFAULT_qcom-msm8916-openstick-ufi001c-wcnss-firmware|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv' \
-            .config || true
-
-          if [ -f "$GITHUB_WORKSPACE/diy-part2.sh" ]; then
-            chmod +x "$GITHUB_WORKSPACE/diy-part2.sh"
-            "$GITHUB_WORKSPACE/diy-part2.sh"
-          fi
 
       - name: Add HomeProxy
         working-directory: ${{ github.workspace }}/openwrt
