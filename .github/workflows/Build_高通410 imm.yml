@@ -171,46 +171,44 @@ jobs:
         run: |
           set -e
           export TERM=xterm
-          echo "=== Checking opkg host build support ==="
+
+          echo "=== Repair opkg host build ==="
           OPKG_MK="package/system/opkg/Makefile"
 
-          if [ ! -f "$OPKG_MK" ]; then
+          test -f "$OPKG_MK" || {
             echo "::error::Missing $OPKG_MK"
             exit 1
-          fi
+          }
 
-          if grep -q '\$(eval \$(call HostBuild))' "$OPKG_MK"; then
-            echo "opkg already provides HostBuild"
-          else
-            echo "opkg Makefile is missing HostBuild; replacing it with the current ImmortalWrt version"
+          # package/Makefile requires opkg/host when APK is disabled.
+          # Ensure the opkg package actually defines HostBuild.
+          if ! grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK"; then
+            echo "opkg Makefile has no HostBuild; replacing it with ImmortalWrt's compatible opkg Makefile"
             curl -fsSL \
               https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/package/system/opkg/Makefile \
               -o "$OPKG_MK"
           fi
 
-          echo "=== Verify repaired opkg Makefile ==="
+          echo "=== Verify opkg Makefile ==="
           grep -nE 'host-build.mk|Host/Install|HostBuild' "$OPKG_MK"
 
-          if ! grep -q '\$(eval \$(call HostBuild))' "$OPKG_MK"; then
+          grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK" || {
             echo "::error::opkg Makefile still has no HostBuild"
             exit 1
-          fi
+          }
 
-          echo "=== Rebuild package metadata after opkg repair ==="
-          rm -f tmp/.packagedeps tmp/.packageinfo tmp/.targetinfo
-          rm -rf tmp/info tmp/packageinfo
-
-          echo "=== Prepare non-interactive configuration ==="
+          echo "=== Defconfig ==="
           make defconfig
 
-          echo "=== Rebuild package metadata ==="
-          make package/metadata V=s
+          echo "=== Verify opkg host target ==="
+          if ! make -n package/system/opkg/host/compile >/tmp/opkg-host-target.log 2>&1; then
+            cat /tmp/opkg-host-target.log
+            echo "::error::package/system/opkg/host/compile is still missing"
+            exit 1
+          fi
+          tail -n 30 /tmp/opkg-host-target.log
 
-          echo "=== Verify opkg host target exists ==="
-          make -n package/system/opkg/host/compile >/tmp/opkg-host-target.txt
-          cat /tmp/opkg-host-target.txt | tail -n 20
-
-          echo "=== Test opkg host target ==="
+          echo "=== Build opkg host ==="
           make package/system/opkg/host/compile V=s
 
       - name: Add HomeProxy
