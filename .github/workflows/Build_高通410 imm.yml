@@ -164,7 +164,7 @@ jobs:
           fi
 
 
-      - name: Prepare build system and opkg host build
+      - name: Select APK package manager and prepare build system
         working-directory: ${{ github.workspace }}/openwrt
         env:
           TERM: xterm
@@ -172,53 +172,54 @@ jobs:
           set -e
           export TERM=xterm
 
-          echo "=== Prepare OpenWrt build system ==="
+          echo "=== Select APK package manager ==="
 
-          # This tree needs the host architecture site configuration before prereq.
-          mkdir -p include/site
-          if [ ! -s include/site/aarch64 ]; then
-            curl -fsSL \
-              https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/include/site/aarch64 \
-              -o include/site/aarch64
-          fi
-          test -s include/site/aarch64
-
-          OPKG_MK="package/system/opkg/Makefile"
-          test -f "$OPKG_MK"
-
-          # Keep the repository's opkg Makefile; only add the missing HostBuild
-          # hooks when this fork lacks them. Do not replace the whole Makefile
-          # with a different branch/version.
-          if ! grep -Fq '$(INCLUDE_DIR)/host-build.mk' "$OPKG_MK"; then
-            printf '\ninclude $(INCLUDE_DIR)/host-build.mk\n' >> "$OPKG_MK"
-          fi
-          if ! grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK"; then
-            printf '\n$(eval $(call HostBuild))\n' >> "$OPKG_MK"
+          # The UFI-001C config currently selects the legacy opkg package
+          # manager, but this source tree does not expose a usable
+          # package/system/opkg/host/compile target. Do not patch opkg or
+          # manufacture package metadata. Use the build system's native APK
+          # path instead.
+          if grep -q '^# CONFIG_USE_APK is not set$' .config; then
+            sed -i 's/^# CONFIG_USE_APK is not set$/CONFIG_USE_APK=y/' .config
+          elif grep -q '^CONFIG_USE_APK=' .config; then
+            sed -i 's/^CONFIG_USE_APK=.*/CONFIG_USE_APK=y/' .config
+          else
+            echo 'CONFIG_USE_APK=y' >> .config
           fi
 
-          echo "=== opkg HostBuild hooks ==="
-          grep -nE 'host-build.mk|HostBuild' "$OPKG_MK"
+          # Explicitly disable the old opkg package selection if present.
+          if grep -q '^CONFIG_PACKAGE_opkg=' .config; then
+            sed -i 's/^CONFIG_PACKAGE_opkg=.*/# CONFIG_PACKAGE_opkg is not set/' .config
+          fi
+
+          # Remove stale opkg host metadata created by previous workflow logic.
+          rm -f tmp/.packagedeps tmp/.packageinfo tmp/.packageauxvars tmp/.packageusergroup 2>/dev/null || true
 
           echo "=== Defconfig ==="
           make defconfig
 
-          # IMPORTANT: defconfig alone does not rebuild tmp/.packagedeps.
-          # prepare-tmpinfo/prereq regenerates package metadata, which is what
-          # registers package/system/opkg/host/compile as a Make target.
-          echo "=== Regenerate package metadata ==="
-          rm -f tmp/.packagedeps tmp/.packageinfo tmp/.packageauxvars tmp/.packageusergroup
-          make prereq V=s
+          echo "=== Package manager configuration ==="
+          grep -E '^CONFIG_USE_APK=|^CONFIG_PACKAGE_opkg=|^# CONFIG_PACKAGE_opkg is not set|^CONFIG_PACKAGE_apk-mbedtls=' .config || true
 
-          echo "=== Verify opkg host target ==="
-          make -n package/system/opkg/host/compile V=s > /tmp/opkg-host-target.log 2>&1 || {
-            cat /tmp/opkg-host-target.log
-            echo "::error::package/system/opkg/host/compile is unavailable after package metadata regeneration"
+          grep -q '^CONFIG_USE_APK=y$' .config || {
+            echo "::error::CONFIG_USE_APK=y was not accepted by defconfig"
             exit 1
           }
-          tail -n 40 /tmp/opkg-host-target.log
 
-          echo "=== Build opkg host ==="
-          make package/system/opkg/host/compile V=s
+          if grep -q '^CONFIG_PACKAGE_opkg=y$' .config; then
+            echo "::error::opkg is still enabled after switching to APK"
+            exit 1
+          fi
+
+          # APK itself provides a HostBuild target. Verify the target before
+          # starting the long firmware compilation.
+          echo "=== Verify APK host target ==="
+          make -n package/system/apk/host/compile V=s > /tmp/apk-host-target.log 2>&1 || {
+            cat /tmp/apk-host-target.log
+            echo "::error::package/system/apk/host/compile is unavailable"
+            exit 1
+          }
+          tail -n 50 /tmp/apk-host-target.log
 
       - name: Add HomeProxy
         working-directory: ${{ github.workspace }}/openwrt
