@@ -1,13 +1,8 @@
-name: "🚀 Build ImmortalWrt UFI-001C"
+name: "🚀 Build ImmortalWrt UFI-001C (FINAL)"
 
 on:
   workflow_dispatch:
     inputs:
-      ssh:
-        description: "Enable SSH debug"
-        required: false
-        default: false
-        type: boolean
       custom_hash:
         description: "Optional upstream commit hash"
         required: false
@@ -26,7 +21,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
       actions: write
@@ -83,6 +78,13 @@ jobs:
 
           sudo timedatectl set-timezone "$TZ"
 
+      - name: Install mkbootimg
+        run: |
+          wget -q https://github.com/xuxin1955/depend_ubuntu2204_openwrt/releases/download/ubuntu_26.04_LTS_mkbootimg/mkbootimg_34.0.5-12build1_all.deb
+          sudo dpkg -i mkbootimg_34.0.5-12build1_all.deb || true
+          sudo apt-get install -f -y
+          command -v mkbootimg || true
+
       - name: Clone ImmortalWrt
         working-directory: /mnt
         run: |
@@ -100,6 +102,24 @@ jobs:
           fi
 
           ln -sfn /mnt/openwrt "$GITHUB_WORKSPACE/openwrt"
+
+      - name: Apply repository custom files and feeds
+        working-directory: /mnt/openwrt
+        run: |
+          # Keep compatibility with the original build repository layout.
+          if [ -d "$GITHUB_WORKSPACE/files" ]; then
+            rm -rf files
+            cp -a "$GITHUB_WORKSPACE/files" ./files
+          fi
+
+          if [ -f "$GITHUB_WORKSPACE/feeds.conf.default" ]; then
+            cp "$GITHUB_WORKSPACE/feeds.conf.default" ./feeds.conf.default
+          fi
+
+          if [ -f "$GITHUB_WORKSPACE/diy-part1.sh" ]; then
+            chmod +x "$GITHUB_WORKSPACE/diy-part1.sh"
+            "$GITHUB_WORKSPACE/diy-part1.sh"
+          fi
 
       - name: Update feeds
         working-directory: /mnt/openwrt
@@ -121,16 +141,31 @@ jobs:
             '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c|^CONFIG_DEFAULT_qcom-msm8916-modem-openstick-ufi001c-firmware|^CONFIG_DEFAULT_qcom-msm8916-openstick-ufi001c-wcnss-firmware|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv' \
             .config || true
 
+          if [ -f "$GITHUB_WORKSPACE/diy-part2.sh" ]; then
+            chmod +x "$GITHUB_WORKSPACE/diy-part2.sh"
+            "$GITHUB_WORKSPACE/diy-part2.sh"
+          fi
+
       - name: Add HomeProxy
         working-directory: /mnt/openwrt
         run: |
           rm -rf package/luci-app-homeproxy /tmp/homeproxy
 
-          git clone --depth=1 \
-            https://github.com/immortalwrt/homeproxy.git \
-            /tmp/homeproxy
+          for n in 1 2 3; do
+            rm -rf /tmp/homeproxy
+            if git clone --depth=1 \
+              https://github.com/immortalwrt/homeproxy.git \
+              /tmp/homeproxy; then
+              break
+            fi
+            echo "HomeProxy clone failed (attempt $n/3)"
+            sleep 5
+          done
 
-          test -f /tmp/homeproxy/Makefile
+          test -f /tmp/homeproxy/Makefile || {
+            echo "::error::Unable to clone ImmortalWrt HomeProxy"
+            exit 1
+          }
 
           cp -a /tmp/homeproxy package/luci-app-homeproxy
           rm -rf /tmp/homeproxy
@@ -339,8 +374,10 @@ jobs:
                 --set-allowed-modes="$ALLOWED" \
                 >/tmp/ufi001c-mmcli.log 2>&1
 
-              $UCI set network.modem.allowedmode="$MODE"
-              $UCI commit network
+              if $UCI -q get network.modem >/dev/null 2>&1; then
+                  $UCI set network.modem.allowedmode="$MODE"
+                  $UCI commit network
+              fi
 
               return 0
           }
@@ -352,8 +389,12 @@ jobs:
 
               log_msg "Configuring HomeProxy subscription"
 
-              $UCI -q set homeproxy.subscription.auto_update='1'
-              $UCI -q delete homeproxy.subscription.subscription_url
+              if ! $UCI -q get homeproxy.subscription >/dev/null 2>&1; then
+                  $UCI set homeproxy.subscription=subscription
+              fi
+
+              $UCI set homeproxy.subscription.auto_update='1'
+              $UCI delete homeproxy.subscription.subscription_url 2>/dev/null || true
               $UCI add_list homeproxy.subscription.subscription_url="$SUBURL"
               $UCI commit homeproxy
 
@@ -488,6 +529,13 @@ jobs:
             enable_pkg "$pkg"
           done
 
+          # HomeProxy depends on the virtual package sing-box. The OpenWrt
+          # sing-box-tiny variant provides that virtual package.
+          grep -q '^CONFIG_PACKAGE_sing-box-tiny=y$' .config || {
+            echo "::error::sing-box-tiny is missing from .config"
+            exit 1
+          }
+
           # Keep the dedicated UFI-001C modem firmware from the device config.
           enable_pkg qcom-msm8916-modem-openstick-ufi001c-firmware
           enable_pkg qcom-msm8916-openstick-ufi001c-wcnss-firmware
@@ -517,9 +565,15 @@ jobs:
             '^CONFIG_DEFAULT_qcom-msm8916-(modem-openstick-ufi001c-firmware|openstick-ufi001c-wcnss-firmware)|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv|^CONFIG_PACKAGE_qcom-msm8916-modem-openstick-ufi001c-firmware=' \
             .config || true
 
-      - name: Optional SSH debug
-        uses: mxschmitt/action-tmate@v0.1.5
-        if: ${{ inputs.ssh }}
+      - name: Validate generated package files
+        working-directory: /mnt/openwrt
+        run: |
+          test -s package/ufi001c-control/Makefile
+          test -s package/ufi001c-control/root/usr/sbin/ufi001c-control
+          test -s package/ufi001c-control/luasrc/controller/ufi001c.lua
+          test -s package/ufi001c-control/luasrc/model/cbi/ufi001c.lua
+          sh -n package/ufi001c-control/root/usr/sbin/ufi001c-control
+          echo "Custom UFI-001C package validation: PASS"
 
       - name: Defconfig and validate
         working-directory: /mnt/openwrt
@@ -609,6 +663,31 @@ jobs:
             -type f \
             \( -name '*sysupgrade*' -o -name '*factory*' -o -name '*boot.img*' -o -name '*system.img*' \) \
             -exec cp {} release_files/ \;
+
+          # Build a ready-to-flash package when the original repository provides
+          # its flashing scripts and the target emits boot/system images.
+          if [ -d "$GITHUB_WORKSPACE/刷机脚本" ]; then
+            BOOT_IMG=$(ls *boot.img.gz *boot.img 2>/dev/null | head -1 || true)
+            SYSTEM_IMG=$(ls *system.img.gz *system.img 2>/dev/null | head -1 || true)
+            if [ -n "$BOOT_IMG" ] && [ -n "$SYSTEM_IMG" ]; then
+              rm -rf flash_package
+              mkdir -p flash_package
+
+              case "$BOOT_IMG" in
+                *.gz) cp "$BOOT_IMG" flash_package/boot.img.gz; gzip -dk flash_package/boot.img.gz; rm -f flash_package/boot.img.gz ;;
+                *) cp "$BOOT_IMG" flash_package/boot.img ;;
+              esac
+
+              case "$SYSTEM_IMG" in
+                *.gz) cp "$SYSTEM_IMG" flash_package/system.img.gz; gzip -dk flash_package/system.img.gz; rm -f flash_package/system.img.gz ;;
+                *) cp "$SYSTEM_IMG" flash_package/system.img ;;
+              esac
+
+              cp -a "$GITHUB_WORKSPACE/刷机脚本/." flash_package/
+              (cd flash_package && zip -qr ../OpenWrt_UFI001C_flash_package.zip .)
+              cp OpenWrt_UFI001C_flash_package.zip release_files/
+            fi
+          fi
 
           test -n "$(find release_files -type f -print -quit)" || {
             echo "::error::No firmware files collected"
