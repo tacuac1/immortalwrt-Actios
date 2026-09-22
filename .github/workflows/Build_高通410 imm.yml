@@ -164,7 +164,7 @@ jobs:
           fi
 
 
-      - name: Repair opkg host build
+      - name: Prepare build system and opkg host build
         working-directory: ${{ github.workspace }}/openwrt
         env:
           TERM: xterm
@@ -172,41 +172,47 @@ jobs:
           set -e
           export TERM=xterm
 
-          echo "=== Repair opkg host build ==="
+          echo "=== Prepare OpenWrt build system ==="
+
+          # This fork is missing the mandatory aarch64 site cache.
+          # Without it, any explicit make target triggers the prereq check and stops.
+          mkdir -p include/site
+          if [ ! -s include/site/aarch64 ]; then
+            echo "Installing aarch64 site config..."
+            curl -fsSL \
+              https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/include/site/aarch64 \
+              -o include/site/aarch64
+          fi
+          test -s include/site/aarch64
+          chmod 0644 include/site/aarch64
+          echo "aarch64 site config: OK"
+
           OPKG_MK="package/system/opkg/Makefile"
+          test -f "$OPKG_MK"
 
-          test -f "$OPKG_MK" || {
-            echo "::error::Missing $OPKG_MK"
-            exit 1
-          }
-
-          # package/Makefile requires opkg/host when APK is disabled.
-          # Ensure the opkg package actually defines HostBuild.
+          # The fork's opkg Makefile is missing HostBuild while package/Makefile
+          # still depends on package/system/opkg/host/compile. Use the compatible
+          # ImmortalWrt opkg Makefile instead of trying to invent a new target.
           if ! grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK"; then
-            echo "opkg Makefile has no HostBuild; replacing it with ImmortalWrt's compatible opkg Makefile"
+            echo "Replacing incompatible opkg Makefile..."
             curl -fsSL \
               https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/package/system/opkg/Makefile \
               -o "$OPKG_MK"
           fi
 
-          echo "=== Verify opkg Makefile ==="
-          grep -nE 'host-build.mk|Host/Install|HostBuild' "$OPKG_MK"
-
-          grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK" || {
-            echo "::error::opkg Makefile still has no HostBuild"
-            exit 1
-          }
+          grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK"
+          grep -nE 'host-build.mk|HostBuild' "$OPKG_MK" | tail -20
 
           echo "=== Defconfig ==="
           make defconfig
 
           echo "=== Verify opkg host target ==="
-          if ! make -n package/system/opkg/host/compile >/tmp/opkg-host-target.log 2>&1; then
+          make -n package/system/opkg/host/compile > /tmp/opkg-host-target.log 2>&1 || {
             cat /tmp/opkg-host-target.log
-            echo "::error::package/system/opkg/host/compile is still missing"
+            echo "::error::package/system/opkg/host/compile is unavailable after build-system preparation"
             exit 1
-          fi
-          tail -n 30 /tmp/opkg-host-target.log
+          }
+          tail -n 40 /tmp/opkg-host-target.log
 
           echo "=== Build opkg host ==="
           make package/system/opkg/host/compile V=s
