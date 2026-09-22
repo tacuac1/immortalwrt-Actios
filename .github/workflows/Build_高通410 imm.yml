@@ -144,6 +144,38 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
 
+      - name: Repair opkg host build
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -e
+          echo "=== Checking opkg host build support ==="
+          OPKG_MK="package/system/opkg/Makefile"
+
+          if [ ! -f "$OPKG_MK" ]; then
+            echo "::error::Missing $OPKG_MK"
+            exit 1
+          fi
+
+          if grep -q '\$(eval \$(call HostBuild))' "$OPKG_MK"; then
+            echo "opkg already provides HostBuild"
+          else
+            echo "opkg Makefile is missing HostBuild; replacing it with the current ImmortalWrt version"
+            curl -fsSL \
+              https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/package/system/opkg/Makefile \
+              -o "$OPKG_MK"
+          fi
+
+          echo "=== Verify repaired opkg Makefile ==="
+          grep -nE 'host-build.mk|Host/Install|HostBuild' "$OPKG_MK"
+
+          if ! grep -q '\$(eval \$(call HostBuild))' "$OPKG_MK"; then
+            echo "::error::opkg Makefile still has no HostBuild"
+            exit 1
+          fi
+
+          echo "=== Test opkg host target ==="
+          make package/system/opkg/host/compile V=s
+
       - name: Load UFI-001C configuration
         working-directory: ${{ github.workspace }}/openwrt
         run: |
@@ -659,8 +691,64 @@ jobs:
       - name: Compile firmware
         working-directory: ${{ github.workspace }}/openwrt
         run: |
+          set -o pipefail
+
+          echo "=========================================="
+          echo "Compile UFI-001C firmware"
+          echo "=========================================="
           echo "CPU threads: $(nproc)"
-          make -j"$(nproc)" || make -j1 V=s
+          echo "Memory:"
+          free -h
+          echo "Disk:"
+          df -h .
+
+          rm -f compile.log compile-j1.log
+
+          echo "=== First build: parallel -j2 ==="
+          set +e
+          make -j2 V=s 2>&1 | tee compile.log
+          RC=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$RC" -ne 0 ]; then
+            echo "=========================================="
+            echo "Parallel build failed with exit code: $RC"
+            echo "Retrying with single job (-j1)"
+            echo "=========================================="
+
+            set +e
+            make -j1 V=s 2>&1 | tee compile-j1.log
+            RC2=${PIPESTATUS[0]}
+            set -e
+
+            echo "=========================================="
+            echo "Single-job build exit code: $RC2"
+            echo "=========================================="
+
+            echo "=== Last 200 lines of single-job log ==="
+            tail -n 200 compile-j1.log || true
+
+            echo "=== Searching compiler errors ==="
+            grep -Ein \
+              '(^|[^[:alpha:]])(error:|fatal error:|undefined reference|No rule to make target|recipe for target|Error [0-9]+|make\[[0-9]+\]: \*\*\*)' \
+              compile-j1.log | tail -n 100 || true
+
+            exit "$RC2"
+          fi
+
+          echo "=========================================="
+          echo "Parallel build completed successfully"
+          echo "=========================================="
+
+      - name: Upload compile logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UFI001C-compile-logs
+          path: |
+            ${{ github.workspace }}/openwrt/compile.log
+            ${{ github.workspace }}/openwrt/compile-j1.log
+          if-no-files-found: ignore
 
       - name: Collect firmware
         run: |
