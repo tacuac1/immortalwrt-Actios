@@ -86,14 +86,21 @@ jobs:
           command -v mkbootimg || true
 
       - name: Clone ImmortalWrt
-        working-directory: /mnt
+        working-directory: ${{ github.workspace }}
         run: |
-          rm -rf openwrt
+          echo "Workspace: $GITHUB_WORKSPACE"
+          test -w "$GITHUB_WORKSPACE" || {
+            echo "::error::GitHub workspace is not writable"
+            ls -ld "$GITHUB_WORKSPACE"
+            exit 1
+          }
+
+          rm -rf "$GITHUB_WORKSPACE/openwrt"
 
           git clone --depth=1 \
             -b "$REPO_BRANCH" \
             "$REPO_URL" \
-            openwrt
+            "$GITHUB_WORKSPACE/openwrt"
 
           if [ -n "${{ inputs.custom_hash }}" ]; then
             cd openwrt
@@ -101,10 +108,20 @@ jobs:
             git checkout "${{ inputs.custom_hash }}"
           fi
 
-          ln -sfn /mnt/openwrt "$GITHUB_WORKSPACE/openwrt"
+          test -d "$GITHUB_WORKSPACE/openwrt/.git" || {
+            echo "::error::ImmortalWrt clone did not create a git work tree"
+            exit 1
+          }
+
+          test -w "$GITHUB_WORKSPACE/openwrt" || {
+            echo "::error::Cloned ImmortalWrt directory is not writable"
+            ls -ld "$GITHUB_WORKSPACE/openwrt"
+            exit 1
+          }
+
 
       - name: Apply repository custom files and feeds
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           # Keep compatibility with the original build repository layout.
           if [ -d "$GITHUB_WORKSPACE/files" ]; then
@@ -122,13 +139,13 @@ jobs:
           fi
 
       - name: Update feeds
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
 
       - name: Load UFI-001C configuration
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           if [ -f "$GITHUB_WORKSPACE/config/ufi001c.config" ]; then
             cp "$GITHUB_WORKSPACE/config/ufi001c.config" .config
@@ -147,7 +164,7 @@ jobs:
           fi
 
       - name: Add HomeProxy
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           rm -rf package/luci-app-homeproxy /tmp/homeproxy
 
@@ -175,7 +192,7 @@ jobs:
           grep -n "PKG_NAME\|sing-box" package/luci-app-homeproxy/Makefile | head -30 || true
 
       - name: Add UFI-001C control package
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
 
           rm -rf package/ufi001c-control
@@ -501,7 +518,7 @@ jobs:
           chmod 0755 package/ufi001c-control/root/usr/sbin/ufi001c-control
 
       - name: Enable UFI-001C packages
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           enable_pkg() {
             PKG="$1"
@@ -566,7 +583,7 @@ jobs:
             .config || true
 
       - name: Validate generated package files
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           test -s package/ufi001c-control/Makefile
           test -s package/ufi001c-control/root/usr/sbin/ufi001c-control
@@ -576,7 +593,7 @@ jobs:
           echo "Custom UFI-001C package validation: PASS"
 
       - name: Defconfig and validate
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           make defconfig
 
@@ -624,7 +641,7 @@ jobs:
           grep -E '^CONFIG_PACKAGE_(luci-app-homeproxy|sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket)=' .config || true
 
       - name: Download sources
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           make download -j4 V=s
           find dl -size -1024c -exec ls -l {} \;
@@ -635,19 +652,19 @@ jobs:
         with:
           name: UFI001C-build-config
           path: |
-            /mnt/openwrt/.config
-            /mnt/openwrt/feeds.conf.default
+            $GITHUB_WORKSPACE/openwrt/.config
+            $GITHUB_WORKSPACE/openwrt/feeds.conf.default
           include-hidden-files: true
 
       - name: Compile firmware
-        working-directory: /mnt/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           echo "CPU threads: $(nproc)"
           make -j"$(nproc)" || make -j1 V=s
 
       - name: Collect firmware
         run: |
-          cd /mnt/openwrt/bin/targets/*/*
+          cd "$GITHUB_WORKSPACE"/openwrt/bin/targets/*/*
 
           echo "=== Firmware files ==="
           find . -maxdepth 1 -type f -printf '%f\n' | sort
@@ -698,7 +715,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt-UFI001C
-          path: /mnt/openwrt/bin/targets/*/*/release_files/*
+          path: $GITHUB_WORKSPACE/openwrt/bin/targets/*/*/release_files/*
           if-no-files-found: error
 
       - name: Create release
@@ -729,7 +746,7 @@ jobs:
             The subscription URL is NOT embedded in this GitHub workflow.
             Enter it locally from LuCI after flashing.
 
-          artifacts: /mnt/openwrt/bin/targets/*/*/release_files/*
+          artifacts: $GITHUB_WORKSPACE/openwrt/bin/targets/*/*/release_files/*
           artifactErrorsFailBuild: false
           allowUpdates: true
           draft: false
