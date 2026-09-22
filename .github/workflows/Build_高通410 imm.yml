@@ -174,42 +174,45 @@ jobs:
 
           echo "=== Prepare OpenWrt build system ==="
 
-          # This fork is missing the mandatory aarch64 site cache.
-          # Without it, any explicit make target triggers the prereq check and stops.
+          # This tree needs the host architecture site configuration before prereq.
           mkdir -p include/site
           if [ ! -s include/site/aarch64 ]; then
-            echo "Installing aarch64 site config..."
             curl -fsSL \
               https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/include/site/aarch64 \
               -o include/site/aarch64
           fi
           test -s include/site/aarch64
-          chmod 0644 include/site/aarch64
-          echo "aarch64 site config: OK"
 
           OPKG_MK="package/system/opkg/Makefile"
           test -f "$OPKG_MK"
 
-          # The fork's opkg Makefile is missing HostBuild while package/Makefile
-          # still depends on package/system/opkg/host/compile. Use the compatible
-          # ImmortalWrt opkg Makefile instead of trying to invent a new target.
+          # Keep the repository's opkg Makefile; only add the missing HostBuild
+          # hooks when this fork lacks them. Do not replace the whole Makefile
+          # with a different branch/version.
+          if ! grep -Fq '$(INCLUDE_DIR)/host-build.mk' "$OPKG_MK"; then
+            printf '\ninclude $(INCLUDE_DIR)/host-build.mk\n' >> "$OPKG_MK"
+          fi
           if ! grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK"; then
-            echo "Replacing incompatible opkg Makefile..."
-            curl -fsSL \
-              https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/package/system/opkg/Makefile \
-              -o "$OPKG_MK"
+            printf '\n$(eval $(call HostBuild))\n' >> "$OPKG_MK"
           fi
 
-          grep -Fq '$(eval $(call HostBuild))' "$OPKG_MK"
-          grep -nE 'host-build.mk|HostBuild' "$OPKG_MK" | tail -20
+          echo "=== opkg HostBuild hooks ==="
+          grep -nE 'host-build.mk|HostBuild' "$OPKG_MK"
 
           echo "=== Defconfig ==="
           make defconfig
 
+          # IMPORTANT: defconfig alone does not rebuild tmp/.packagedeps.
+          # prepare-tmpinfo/prereq regenerates package metadata, which is what
+          # registers package/system/opkg/host/compile as a Make target.
+          echo "=== Regenerate package metadata ==="
+          rm -f tmp/.packagedeps tmp/.packageinfo tmp/.packageauxvars tmp/.packageusergroup
+          make prereq V=s
+
           echo "=== Verify opkg host target ==="
-          make -n package/system/opkg/host/compile > /tmp/opkg-host-target.log 2>&1 || {
+          make -n package/system/opkg/host/compile V=s > /tmp/opkg-host-target.log 2>&1 || {
             cat /tmp/opkg-host-target.log
-            echo "::error::package/system/opkg/host/compile is unavailable after build-system preparation"
+            echo "::error::package/system/opkg/host/compile is unavailable after package metadata regeneration"
             exit 1
           }
           tail -n 40 /tmp/opkg-host-target.log
