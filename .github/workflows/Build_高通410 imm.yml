@@ -1,65 +1,28 @@
-#
-#
-
-name: 🚀 Build_imm_高通410系列
+name: "🚀 Build ImmortalWrt UFI-001C"
 
 on:
-  repository_dispatch:
   workflow_dispatch:
     inputs:
       ssh:
-        description: ' ← 选择是否开启 SSH 调试专业人员使用'
+        description: "Enable SSH debug"
         required: false
         default: false
         type: boolean
-      profile:
-        description: ' ↓ 支持多款型号 手动选择要编译的机型 ↓ '
-        type: choice
-        options:
-          - ufi003
-          - ufi001c
-          - ufi001b
-          - ufi103s
-          - jz02v10
-          - qrzl903
-          - w001
-          - uz801
-          - mf32
-          - mf601
-          - wf2
-          - sp970v11
-          - sp970v10
-        default: ufi003
-        required: true
-      upstream:
-        description: ' ↓ 选择上游源码仓库 ↓ '
-        type: choice
-        options:
-          - lkiuyu/immortalwrt
-        default: lkiuyu/immortalwrt
-        required: true
       custom_hash:
-        description: ' ↓ 指定 hash（默认不用填写）↓ '
+        description: "Optional upstream commit hash"
         required: false
-        default: ''
+        default: ""
         type: string
       extra_packages:
-        description: ' ↓ 输入额外包名（逗号或空格分隔，留空则不添加任何额外包）↓ '
+        description: "Extra packages, separated by spaces or commas"
         required: false
-        default: ''
+        default: ""
         type: string
 
 env:
-  REPO_URL: https://github.com/${{ github.event.inputs.upstream }}
-  REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: ${{ format('config/{0}.config', github.event.inputs.profile) }}
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
-  TZ: Asia/Shanghai
+  REPO_URL: "https://github.com/lkiuyu/immortalwrt"
+  REPO_BRANCH: "master"
+  TZ: "Asia/Shanghai"
 
 jobs:
   build:
@@ -67,782 +30,628 @@ jobs:
     permissions:
       contents: write
       actions: write
+
     steps:
-    - name: 🚀 编译 (Build)
-      uses: actions/checkout@main
 
-    - name: Show hardware info
-      run: |
-        chmod 755 ./scripts/show_hardware_info.sh
-        ./scripts/show_hardware_info.sh
-  
-    - name: Free Disk Space (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: false
-        android: false
-        dotnet: false
-        haskell: false
-        large-packages: false
-        docker-images: false
-        swap-storage: true
-        
-    - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+      - name: Checkout build repository
+        uses: actions/checkout@v4
 
-    - name: mkbootimg build
-      run: |
-        wget https://github.com/xuxin1955/depend_ubuntu2204_openwrt/releases/download/ubuntu_26.04_LTS_mkbootimg/mkbootimg_34.0.5-12build1_all.deb
-        sudo dpkg -i mkbootimg_34.0.5-12build1_all.deb
-        sudo apt-get install -f -y
-        # 验证安装
-        mkbootimg --help || true
-        MKBOOTIMG_PATH=$(which mkbootimg)
-        if [ -n "$MKBOOTIMG_PATH" ]; then
-        echo "mkbootimg found at: $MKBOOTIMG_PATH"
-        file "$MKBOOTIMG_PATH"
-        else
-        echo "❌ mkbootimg not found in PATH!"
-        fi
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: false
+          haskell: false
+          large-packages: false
+          docker-images: false
+          swap-storage: true
 
-        sudo timedatectl set-timezone "$TZ"
-        sudo chmod 777 /mnt
-        df -hT
-        
-    - name: Ensure Python build tools
-      run: |
-       python3 -m pip cache purge
-       python3 -m pip install --upgrade --force-reinstall pip
-       python3 -m pip install --upgrade --force-reinstall 'setuptools>=65' wheel
-       python3 -m pip install --upgrade 'setuptools-scm>=8,<10'
-       python3 -m pip install --upgrade cython packaging tomli
-       python3 -m pip install Unidecode pyelftools
-       python3 -m pip --version
-       python3 -c "import setuptools.build_meta; print('setuptools.build_meta OK')"
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            flex \
+            bison \
+            g++ \
+            gawk \
+            gcc-multilib \
+            gettext \
+            git \
+            libncurses5-dev \
+            libssl-dev \
+            python3-distutils \
+            rsync \
+            unzip \
+            zlib1g-dev \
+            file \
+            wget \
+            curl \
+            jq \
+            zip \
+            p7zip-full \
+            gettext-base \
+            xsltproc \
+            swig \
+            time \
+            libelf-dev \
+            libdw-dev
 
+          sudo timedatectl set-timezone "$TZ"
 
+      - name: Clone ImmortalWrt
+        working-directory: /mnt
+        run: |
+          rm -rf openwrt
 
-    - name: 读取锁定的上游 hash (Read locked upstream hash)
-      id: lock
-      run: |
-        CUSTOM_HASH="${{ github.event.inputs.custom_hash }}"
-        LOCK_FILE="upstream_lock.txt"
-        if [ -n "$CUSTOM_HASH" ]; then
-          echo "locked_hash=$CUSTOM_HASH" >> $GITHUB_OUTPUT
-          echo "使用用户指定 hash: $CUSTOM_HASH"
-        elif [ -f "$LOCK_FILE" ]; then
-          HASH=$(cat $LOCK_FILE)
-          echo "locked_hash=$HASH" >> $GITHUB_OUTPUT
-          echo "使用锁定 hash: $HASH"
-        else
-          echo "locked_hash=" >> $GITHUB_OUTPUT
-          echo "upstream_lock.txt 不存在，使用最新 master"
-        fi
+          git clone --depth=1 \
+            -b "$REPO_BRANCH" \
+            "$REPO_URL" \
+            openwrt
 
-    - name: Configure Git
-      run: git config --global http.postBuffer 524288000
+          if [ -n "${{ inputs.custom_hash }}" ]; then
+            cd openwrt
+            git fetch --depth=1 origin "${{ inputs.custom_hash }}"
+            git checkout "${{ inputs.custom_hash }}"
+          fi
 
-    - name: Clone source code
-      working-directory: /mnt
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        if [ -n "${{ steps.lock.outputs.locked_hash }}" ]; then
-          cd openwrt && git checkout ${{ steps.lock.outputs.locked_hash }}
-        fi
-        ln -sf /mnt/openwrt $GITHUB_WORKSPACE/openwrt
+          ln -sfn /mnt/openwrt "$GITHUB_WORKSPACE/openwrt"
 
+      - name: Update feeds
+        working-directory: /mnt/openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a -f
 
-    - name:  files
-      run: cp -r files openwrt/files
+      - name: Load UFI-001C configuration
+        working-directory: /mnt/openwrt
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/config/ufi001c.config" ]; then
+            cp "$GITHUB_WORKSPACE/config/ufi001c.config" .config
+          else
+            echo "::error::config/ufi001c.config not found"
+            exit 1
+          fi
 
-    - name: Load custom feeds
-      run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
-        
+          grep -E \
+            '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c|^CONFIG_DEFAULT_qcom-msm8916-modem-openstick-ufi001c-firmware|^CONFIG_DEFAULT_qcom-msm8916-openstick-ufi001c-wcnss-firmware|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv' \
+            .config || true
 
-    - name: Update feeds
-      run: cd openwrt && ./scripts/feeds update -a
+      - name: Add HomeProxy
+        working-directory: /mnt/openwrt
+        run: |
+          rm -rf package/luci-app-homeproxy /tmp/homeproxy
 
-    - name: Remove conflicting packages from smpackage
-      run: |
-        # 删除 small-package 中与系统冲突的包，避免编译报错（官方推荐操作）
-        rm -rf openwrt/feeds/smpackage/{base-files,dnsmasq,firewall*,fullconenat,libnftnl,nftables,ppp,opkg,ucl,upx,vsftpd*,miniupnpd-iptables,wireless-regdb}
+          git clone --depth=1 \
+            https://github.com/immortalwrt/homeproxy.git \
+            /tmp/homeproxy
 
-    - name: Install feeds
-      run: cd openwrt && ./scripts/feeds install -a -f
+          test -f /tmp/homeproxy/Makefile
 
-    - name: Load custom configuration
-      run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+          cp -a /tmp/homeproxy package/luci-app-homeproxy
+          rm -rf /tmp/homeproxy
 
-    - name: Enable IPv4 policy routing
-      run: |
-        cd openwrt
+          echo "HomeProxy package installed:"
+          test -f package/luci-app-homeproxy/Makefile
+          grep -n "PKG_NAME\|sing-box" package/luci-app-homeproxy/Makefile | head -30 || true
 
-        echo "=========================================="
-        echo "Enable IPv4 policy routing for UFI103S"
-        echo "=========================================="
+      - name: Add UFI-001C control package
+        working-directory: /mnt/openwrt
+        run: |
 
-        KERNEL_CONFIG="target/linux/generic/config-6.12"
+          rm -rf package/ufi001c-control
 
-        if [ ! -f "$KERNEL_CONFIG" ]; then
-          echo "ERROR: $KERNEL_CONFIG not found!"
-          exit 1
-        fi
+          mkdir -p \
+            package/ufi001c-control/luasrc/controller \
+            package/ufi001c-control/luasrc/model/cbi \
+            package/ufi001c-control/root/etc/config \
+            package/ufi001c-control/root/usr/sbin
 
-        echo "Using kernel config: $KERNEL_CONFIG"
+          cat > package/ufi001c-control/Makefile <<'EOF'
+          include $(TOPDIR)/rules.mk
 
-        # Remove old/conflicting values first.
-        sed -i '/^CONFIG_IP_ADVANCED_ROUTER=/d' "$KERNEL_CONFIG"
-        sed -i '/^# CONFIG_IP_ADVANCED_ROUTER is not set$/d' "$KERNEL_CONFIG"
-        sed -i '/^CONFIG_IP_MULTIPLE_TABLES=/d' "$KERNEL_CONFIG"
-        sed -i '/^# CONFIG_IP_MULTIPLE_TABLES is not set$/d' "$KERNEL_CONFIG"
+          PKG_NAME:=ufi001c-control
+          PKG_RELEASE:=1
 
-        # Enable IPv4 advanced routing and multiple routing tables.
-        echo 'CONFIG_IP_ADVANCED_ROUTER=y' >> "$KERNEL_CONFIG"
-        echo 'CONFIG_IP_MULTIPLE_TABLES=y' >> "$KERNEL_CONFIG"
+          include $(INCLUDE_DIR)/package.mk
 
-        echo "Kernel policy routing configuration:"
-        grep -E '^CONFIG_IP_(ADVANCED_ROUTER|MULTIPLE_TABLES)=' "$KERNEL_CONFIG"
+          define Package/ufi001c-control
+            SECTION:=luci
+            CATEGORY:=LuCI
+            SUBMENU:=3. Applications
+            TITLE:=UFI-001C modem and proxy control
+            DEPENDS:=+luci-base +luci-compat +modemmanager +luci-proto-modemmanager +luci-app-homeproxy
+          endef
 
-        test "$(grep -c '^CONFIG_IP_ADVANCED_ROUTER=y$' "$KERNEL_CONFIG")" -eq 1
-        test "$(grep -c '^CONFIG_IP_MULTIPLE_TABLES=y$' "$KERNEL_CONFIG")" -eq 1
+          define Package/ufi001c-control/description
+           LuCI control panel for UFI-001C 3G/4G mode and HomeProxy
+          endef
 
-    - name: Install extra packages
-      if: ${{ inputs.extra_packages != '' }}
-      run: |
-        cd openwrt
-        echo "=========================================="
-        echo "User requested extra packages:"
-        echo "${{ inputs.extra_packages }}"
-        echo "=========================================="
+          define Build/Compile
+          endef
 
-        # 提取系统设置参数（__ip__ 和 __hostname__ 前缀）
-        RAW='${{ inputs.extra_packages }}'
-        CUSTOM_IP=$(echo "$RAW" | grep -oP '(?<=__ip__)[^,\s]+' || true)
-        CUSTOM_HOSTNAME=$(echo "$RAW" | grep -oP '(?<=__hostname__)[^,\s]+' || true)
+          define Package/ufi001c-control/install
+            $(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
+            $(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi
+            $(INSTALL_DIR) $(1)/etc/config
+            $(INSTALL_DIR) $(1)/usr/sbin
 
-        # 应用自定义 IP
-        if [ -n "$CUSTOM_IP" ]; then
-          echo "🌐 设置管理 IP: $CUSTOM_IP"
-          sed -i "s/192\.168\.1\.1/$CUSTOM_IP/g" package/base-files/files/bin/config_generate
-        fi
+            $(CP) ./luasrc/controller/* $(1)/usr/lib/lua/luci/controller/
+            $(CP) ./luasrc/model/cbi/* $(1)/usr/lib/lua/luci/model/cbi/
+            $(CP) ./root/etc/config/* $(1)/etc/config/
+            $(CP) ./root/usr/sbin/* $(1)/usr/sbin/
 
-        # 应用自定义主机名
-        if [ -n "$CUSTOM_HOSTNAME" ]; then
-          echo "🏷️ 设置主机名: $CUSTOM_HOSTNAME"
-          sed -i "s/set system\.@system\[0\]\.hostname='ImmortalWrt'/set system.@system[0].hostname='$CUSTOM_HOSTNAME'/" package/base-files/files/bin/config_generate || true
-          sed -i "s/option hostname 'ImmortalWrt'/option hostname '$CUSTOM_HOSTNAME'/" package/base-files/files/etc/config/system 2>/dev/null || true
-        fi
+            chmod 0755 $(1)/usr/sbin/ufi001c-control
+          endef
 
-        # 过滤掉特殊前缀，只处理真正的包名
-        PACKAGES=$(echo "$RAW" | sed 's/,/ /g' | tr ' ' '\n' | grep -v '^__ip__' | grep -v '^__hostname__' | tr '\n' ' ')
+          $(eval $(call BuildPackage,ufi001c-control))
+          EOF
 
-        # 检测是否选了 turboacc，如果选了则先执行安装脚本
-        if echo "$PACKAGES" | grep -qw "luci-app-turboacc"; then
-          echo "⚡ 检测到 luci-app-turboacc，执行 turboacc 安装脚本..."
-          curl -sSL https://raw.githubusercontent.com/mufeng05/turboacc/main/add_turboacc.sh -o add_turboacc.sh && bash add_turboacc.sh || echo "⚠️ turboacc 脚本执行失败，跳过"
-        fi
+          cat > package/ufi001c-control/root/etc/config/ufi001c <<'EOF'
+          config ufi001c 'main'
+            option mode '4g'
+            option proxy_enabled '0'
+            option subscription_url ''
+          EOF
 
-        for pkg in $PACKAGES; do
-          if [ -n "$pkg" ]; then
-            CFG="CONFIG_PACKAGE_${pkg}"
-            if grep -q "^# ${CFG} is not set" .config; then
+          cat > package/ufi001c-control/luasrc/controller/ufi001c.lua <<'EOF'
+          module("luci.controller.ufi001c", package.seeall)
+
+          function index()
+            entry(
+              {"admin", "network", "ufi001c"},
+              cbi("ufi001c"),
+              _("UFI-001C"),
+              20
+            ).dependent = false
+          end
+          EOF
+
+          cat > package/ufi001c-control/luasrc/model/cbi/ufi001c.lua <<'EOF'
+          local sys = require "luci.sys"
+
+          m = Map(
+            "ufi001c",
+            translate("UFI-001C"),
+            translate("3G/4G modem and HomeProxy control")
+          )
+
+          s = m:section(
+            NamedSection,
+            "main",
+            "ufi001c",
+            translate("UFI-001C Settings")
+          )
+
+          s.anonymous = true
+
+          mode = s:option(
+            ListValue,
+            "mode",
+            translate("Mobile network mode")
+          )
+
+          mode:value("3g", translate("3G only"))
+          mode:value("4g", translate("4G only"))
+          mode:value("3g|4g", translate("3G + 4G automatic"))
+          mode.default = "4g"
+
+          proxy = s:option(
+            Flag,
+            "proxy_enabled",
+            translate("HomeProxy")
+          )
+
+          proxy.rmempty = false
+          proxy.default = "0"
+          proxy.description = translate(
+            "Enable or disable HomeProxy"
+          )
+
+          sub = s:option(
+            Value,
+            "subscription_url",
+            translate("Subscription URL")
+          )
+
+          sub.password = true
+          sub.rmempty = true
+          sub.description = translate(
+            "Enter the subscription URL. The URL is stored locally on the router."
+          )
+
+          apply = s:option(
+            Button,
+            "_apply",
+            translate("Apply settings")
+          )
+
+          apply.inputstyle = "apply"
+
+          function apply.write()
+            sys.call(
+              "/usr/sbin/ufi001c-control apply >/tmp/ufi001c-control.log 2>&1"
+            )
+          end
+
+          status = s:option(
+            DummyValue,
+            "_status",
+            translate("Status")
+          )
+
+          function status.cfgvalue()
+            return sys.exec(
+              "/usr/sbin/ufi001c-control status 2>/dev/null"
+            )
+          end
+
+          return m
+          EOF
+
+          cat > package/ufi001c-control/root/usr/sbin/ufi001c-control <<'EOF'
+          #!/bin/sh
+
+          UCI="/sbin/uci"
+          LOGTAG="ufi001c-control"
+
+          log_msg() {
+              logger -t "$LOGTAG" "$1"
+          }
+
+          modem_id() {
+              mmcli -L 2>/dev/null |
+              sed -n 's#.*Modem/\([0-9][0-9]*\).*#\1#p' |
+              head -n 1
+          }
+
+          set_mode() {
+              MODE="$($UCI -q get ufi001c.main.mode)"
+              MODEM_ID="$(modem_id)"
+
+              [ -n "$MODEM_ID" ] || {
+                  log_msg "No ModemManager modem found"
+                  return 1
+              }
+
+              case "$MODE" in
+                  3g)
+                      ALLOWED="3g"
+                      ;;
+                  4g)
+                      ALLOWED="4g"
+                      ;;
+                  3g|4g)
+                      ALLOWED="3g|4g"
+                      ;;
+                  *)
+                      ALLOWED="4g"
+                      ;;
+              esac
+
+              log_msg "Setting modem $MODEM_ID allowed mode: $ALLOWED"
+
+              mmcli -m "$MODEM_ID" \
+                --set-allowed-modes="$ALLOWED" \
+                >/tmp/ufi001c-mmcli.log 2>&1
+
+              $UCI set network.modem.allowedmode="$MODE"
+              $UCI commit network
+
+              return 0
+          }
+
+          configure_subscription() {
+              SUBURL="$($UCI -q get ufi001c.main.subscription_url)"
+
+              [ -n "$SUBURL" ] || return 0
+
+              log_msg "Configuring HomeProxy subscription"
+
+              $UCI -q set homeproxy.subscription.auto_update='1'
+              $UCI -q delete homeproxy.subscription.subscription_url
+              $UCI add_list homeproxy.subscription.subscription_url="$SUBURL"
+              $UCI commit homeproxy
+
+              if [ -x /etc/homeproxy/scripts/update_subscriptions.uc ]; then
+                  /etc/homeproxy/scripts/update_subscriptions.uc \
+                    >/tmp/ufi001c-subscription.log 2>&1 || true
+              fi
+          }
+
+          first_node() {
+              $UCI show homeproxy 2>/dev/null |
+                sed -n 's/^homeproxy\.\([^\.]*\)\.type=.*/\1/p' |
+                grep -v '^subscription$' |
+                head -n 1
+          }
+
+          select_first_node() {
+              CURRENT="$($UCI -q get homeproxy.config.main_node)"
+
+              if [ -n "$CURRENT" ] &&
+                 [ "$CURRENT" != "nil" ]; then
+                  return 0
+              fi
+
+              NODE="$(first_node)"
+
+              if [ -n "$NODE" ]; then
+                  log_msg "Selecting first HomeProxy node: $NODE"
+                  $UCI set homeproxy.config.main_node="$NODE"
+                  $UCI commit homeproxy
+              fi
+          }
+
+          set_proxy() {
+              ENABLED="$($UCI -q get ufi001c.main.proxy_enabled)"
+
+              if [ "$ENABLED" = "1" ]; then
+                  log_msg "Enabling HomeProxy"
+
+                  configure_subscription
+                  select_first_node
+
+                  /etc/init.d/homeproxy enable >/dev/null 2>&1 || true
+                  /etc/init.d/homeproxy restart >/tmp/ufi001c-homeproxy.log 2>&1 || true
+              else
+                  log_msg "Disabling HomeProxy"
+
+                  /etc/init.d/homeproxy stop >/dev/null 2>&1 || true
+                  /etc/init.d/homeproxy disable >/dev/null 2>&1 || true
+              fi
+          }
+
+          status() {
+              echo "=== UFI-001C ==="
+
+              echo "Mode: $($UCI -q get ufi001c.main.mode || echo unknown)"
+
+              echo "Proxy: $($UCI -q get ufi001c.main.proxy_enabled || echo 0)"
+
+              if mmcli -L >/dev/null 2>&1; then
+                  echo "ModemManager: detected"
+              else
+                  echo "ModemManager: not detected"
+              fi
+
+              if /etc/init.d/homeproxy status >/dev/null 2>&1; then
+                  echo "HomeProxy: running"
+              else
+                  echo "HomeProxy: stopped"
+              fi
+          }
+
+          apply_all() {
+              set_mode
+              configure_subscription
+              set_proxy
+          }
+
+          case "$1" in
+              mode)
+                  set_mode
+                  ;;
+              proxy)
+                  set_proxy
+                  ;;
+              subscription)
+                  configure_subscription
+                  ;;
+              status)
+                  status
+                  ;;
+              apply|"")
+                  apply_all
+                  ;;
+              *)
+                  echo "Usage: $0 {apply|mode|proxy|subscription|status}"
+                  exit 1
+                  ;;
+          esac
+
+          exit 0
+          EOF
+
+          chmod 0755 package/ufi001c-control/root/usr/sbin/ufi001c-control
+
+      - name: Enable UFI-001C packages
+        working-directory: /mnt/openwrt
+        run: |
+          enable_pkg() {
+            PKG="$1"
+            CFG="CONFIG_PACKAGE_${PKG}"
+
+            if grep -q "^# ${CFG} is not set$" .config; then
               sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
-              echo "✅ Enabled (replaced): ${CFG}=y"
             elif grep -q "^${CFG}=" .config; then
               sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
-              echo "✅ Enabled (updated): ${CFG}=y"
             else
               echo "${CFG}=y" >> .config
-              echo "✅ Enabled (appended): ${CFG}=y"
             fi
-          fi
-        done
-        
-        
-    - name: Add UFI103S LuCI modem and proxy UI
-      if: ${{ inputs.profile == 'ufi103s' }}
-      run: |
-        cd openwrt
-        echo "=========================================="
-        echo "Add UFI103S modem/proxy LuCI integration"
-        echo "=========================================="
-
-        # 1) Native ModemManager protocol UI. Current LuCI exposes
-        #    allowedmode/preferredmode through the ModemManager protocol.
-        #    Keep it in the image so the existing modem interface remains editable.
-        for pkg in luci-proto-modemmanager; do
-          CFG="CONFIG_PACKAGE_${pkg}"
-          if grep -q "^# ${CFG} is not set$" .config; then
-            sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
-          elif grep -q "^${CFG}=" .config; then
-            sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
-          else
-            echo "${CFG}=y" >> .config
-          fi
-        done
-
-        # 2) Use the official ImmortalWrt HomeProxy LuCI application instead of
-        #    luci-app-singbox-ui. HomeProxy is a sing-box client for OpenWrt and
-        #    supports VLESS/VMess, node/subscription management and transparent
-        #    proxy modes. Avoid the broken third-party codeload URL entirely.
-        rm -rf package/luci-app-homeproxy /tmp/homeproxy
-        export GIT_TERMINAL_PROMPT=0
-        for n in 1 2 3; do
-          rm -rf /tmp/homeproxy
-          if git -c credential.helper= -c core.askPass= clone --depth 1 --single-branch \
-            https://github.com/immortalwrt/homeproxy.git /tmp/homeproxy; then
-            break
-          fi
-          echo "HomeProxy clone failed (attempt $n/3)"
-          sleep 5
-        done
-        [ -f /tmp/homeproxy/Makefile ] || {
-          echo "ERROR: ImmortalWrt HomeProxy clone failed after 3 attempts"
-          exit 1
-        }
-        cp -a /tmp/homeproxy package/luci-app-homeproxy
-        # HomeProxy only needs the sing-box executable; use the existing tiny
-        # variant already built for this Snapdragon 410 device.
-        sed -i 's/+sing-box/+sing-box-tiny/' package/luci-app-homeproxy/Makefile
-        echo "HomeProxy package detected at package/luci-app-homeproxy"
-        rm -rf /tmp/homeproxy
-
-        # 3) Small UFI103S-specific modem page. It deliberately uses only fixed
-        #    ModemManager values: no arbitrary shell command is accepted from LuCI.
-        mkdir -p package/ufi103s-modem/{root/usr/share/luci/menu.d,root/usr/lib/lua/luci/model/cbi/ufi103s,root/etc/uci-defaults}
-        cat > package/ufi103s-modem/Makefile <<'EOF'
-        include $(TOPDIR)/rules.mk
-        PKG_NAME:=ufi103s-modem
-        PKG_RELEASE:=1
-        include $(INCLUDE_DIR)/package.mk
-        define Package/ufi103s-modem
-          SECTION:=luci
-          CATEGORY:=LuCI
-          TITLE:=UFI103S Modem controls
-          DEPENDS:=+modemmanager +luci-base
-        endef
-        # This is a files-only package. Do NOT run OpenWrt's default
-        # Build/Compile, because there is no source tree/Makefile in
-        # $(PKG_BUILD_DIR). The previous workflow failed exactly here with
-        # "No targets specified and no makefile found".
-        define Build/Compile
-        endef
-
-        define Package/ufi103s-modem/install
-          $(CP) ./root/* $(1)/
-        endef
-        $(eval $(call BuildPackage,ufi103s-modem))
-        EOF
-
-        cat > package/ufi103s-modem/root/usr/share/luci/menu.d/ufi103s.json <<'EOF'
-        {
-          "admin/modem/ufi103s": {
-            "title": "UFI103S 4G Modem",
-            "order": 10,
-            "action": { "type": "cbi", "path": "ufi103s/modem" },
-            "depends": { "acl": ["luci-base"] }
           }
-        }
-        EOF
 
-        cat > package/ufi103s-modem/root/etc/uci-defaults/99-ufi103s-modem <<'EOF'
-        # Keep the UFI103S connection on LTE + IPv4 by default.
-        uci -q set network.modem.allowedmode='4g'
-        uci -q set network.modem.preferredmode='4g'
-        uci -q set network.modem.iptype='ipv4'
-        uci -q set network.modem.apn='m-wap'
-        uci -q commit network
-        /etc/init.d/ufi103s-proxy-watch enable 2>/dev/null || true
-        exit 0
-        EOF
+          for pkg in \
+            luci-proto-modemmanager \
+            luci-app-homeproxy \
+            luci-i18n-homeproxy-zh-cn \
+            sing-box-tiny \
+            kmod-tun \
+            kmod-nft-tproxy \
+            kmod-nft-socket \
+            ufi001c-control
+          do
+            enable_pkg "$pkg"
+          done
 
-        cat > package/ufi103s-modem/root/usr/lib/lua/luci/model/cbi/ufi103s/modem.lua <<'EOF'
-        local fs = require "nixio.fs"
-        local http = require "luci.http"
-        local uci = require "luci.model.uci".cursor()
+          # Keep the dedicated UFI-001C modem firmware from the device config.
+          enable_pkg qcom-msm8916-modem-openstick-ufi001c-firmware
+          enable_pkg qcom-msm8916-openstick-ufi001c-wcnss-firmware
+          enable_pkg qcom-msm8916-wcnss-openstick-ufi001c-nv
 
-        local function sh(cmd)
-          return luci.sys.exec(cmd) or ""
-        end
+          # Extra user packages.
+          RAW="${{ inputs.extra_packages }}"
+          PACKAGES="$(echo "$RAW" | tr ',' ' ')"
 
-        local function modem_id()
-          local s = sh("mmcli -L 2>/dev/null")
-          return s:match("/Modem/(%d+)")
-        end
+          for pkg in $PACKAGES; do
+            [ -n "$pkg" ] || continue
+            case "$pkg" in
+              __ip__*|__hostname__*)
+                continue
+                ;;
+            esac
+            enable_pkg "$pkg"
+          done
 
-        local mid = modem_id()
-        local m = SimpleForm("ufi103s_modem", translate("UFI103S 4G Modem"),
-          translate("LTE/3G mode and LTE band controls for the built-in UFI103S modem."))
-        m.reset = false
-        m.submit = true
+          echo "=== UFI-001C final requested packages ==="
+          grep -E \
+            '^CONFIG_PACKAGE_(luci-proto-modemmanager|luci-app-homeproxy|luci-i18n-homeproxy-zh-cn|sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket|ufi001c-control)=' \
+            .config || true
 
-        local status = m:section(SimpleSection, nil)
-        local info = mid and sh("mmcli -m " .. mid .. " 2>/dev/null") or "ModemManager: no modem detected"
-        local state = info:match("state:%s*([^\n]+)") or "unknown"
-        local tech = info:match("access tech:%s*([^\n]+)") or "unknown"
-        local sig = info:match("signal quality:%s*([^\n]+)") or "unknown"
-        local op = info:match("operator name:%s*([^\n]+)") or "unknown"
-        local pkt = info:match("packet service state:%s*([^\n]+)") or "unknown"
-        status:option(DummyValue, "status", translate("Status")).value = state
-        status:option(DummyValue, "technology", translate("Access technology")).value = tech
-        status:option(DummyValue, "signal", translate("Signal")).value = sig
-        status:option(DummyValue, "operator", translate("Operator")).value = op
-        status:option(DummyValue, "packet", translate("Packet service")).value = pkt
+          echo "=== UFI-001C firmware packages ==="
+          grep -E \
+            '^CONFIG_DEFAULT_qcom-msm8916-(modem-openstick-ufi001c-firmware|openstick-ufi001c-wcnss-firmware)|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv|^CONFIG_PACKAGE_qcom-msm8916-modem-openstick-ufi001c-firmware=' \
+            .config || true
 
-        local s = m:section(SimpleSection, nil, translate("Network mode"))
-        local mode = s:option(ListValue, "allowedmode", translate("Allowed mode"))
-        mode:value("4g", "4G LTE")
-        mode:value("3g", "3G")
-        mode:value("3g|4g", "3G + 4G")
-        mode:value("2g|3g|4g", "Auto (2G/3G/4G)")
-        mode.default = uci:get("network", "modem", "allowedmode") or "4g"
-        mode.write = function(self, section, value)
-          uci:set("network", "modem", "allowedmode", value)
-          uci:set("network", "modem", "preferredmode", value == "3g|4g" and "4g" or (value == "2g|3g|4g" and "4g" or value))
-          uci:commit("network")
-          if mid then
-            sh("mmcli -m " .. mid .. " --set-allowed-modes='" .. value .. "' >/dev/null 2>&1")
-            if value ~= "2g|3g|4g" then
-              sh("mmcli -m " .. mid .. " --set-preferred-mode='" .. (value == "3g|4g" and "4g" or value) .. "' >/dev/null 2>&1")
-            end
-          end
-        end
+      - name: Optional SSH debug
+        uses: mxschmitt/action-tmate@v0.1.5
+        if: ${{ inputs.ssh }}
 
-        local ip = s:option(ListValue, "iptype", translate("IP type"))
-        ip:value("ipv4", "IPv4")
-        ip:value("ipv4v6", "IPv4 + IPv6")
-        ip:value("ipv6", "IPv6")
-        ip.default = uci:get("network", "modem", "iptype") or "ipv4"
-        ip.write = function(self, section, value)
-          uci:set("network", "modem", "iptype", value)
-          uci:commit("network")
-        end
+      - name: Defconfig and validate
+        working-directory: /mnt/openwrt
+        run: |
+          make defconfig
 
-        local b = m:section(SimpleSection, nil, translate("LTE bands"))
-        b:option(DummyValue, "supported", translate("Supported LTE bands")).value = "B1, B3, B5 (from this UFI103S modem)"
-        local bands = b:option(MultiValue, "bands", translate("LTE band lock"), translate("Leave all unchecked for automatic band selection."))
-        bands.widget = "checkbox"
-        bands:value("eutran-1", "B1")
-        bands:value("eutran-3", "B3")
-        bands:value("eutran-5", "B5")
-        bands.cfgvalue = function(self, section)
-          return uci:get("network", "modem", "bands") or ""
-        end
-        bands.write = function(self, section, value)
-          local list = type(value) == "table" and table.concat(value, "|") or value
-          uci:set("network", "modem", "allowedmode", uci:get("network", "modem", "allowedmode") or "4g")
-          if list == "" then
-            uci:delete("network", "modem", "bands")
-            if mid then sh("mmcli -m " .. mid .. " --set-current-bands='any' >/dev/null 2>&1") end
-          else
-            uci:set("network", "modem", "bands", list)
-            if mid then sh("mmcli -m " .. mid .. " --set-current-bands='" .. list .. "' >/dev/null 2>&1") end
-          end
-          uci:commit("network")
-        end
+          echo "=== Target ==="
+          grep -E '^CONFIG_TARGET.*DEVICE.*=y' .config
 
-        local note = m:section(SimpleSection)
-        note:option(DummyValue, "note", translate("Note")).value = translate("Band locking can temporarily disconnect LTE while the modem reselects a cell.")
-        return m
-        EOF
+          echo "=== UFI-001C ==="
+          grep -E \
+            '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$|^CONFIG_TARGET_PROFILE="DEVICE_openstick-ufi001c"$' \
+            .config
 
-        # Correct the Lua dependency name if the source tree uses nixio.fs differently;
-        # the model itself does not depend on arbitrary filesystem access.
-
-        # 4) Auto-restart helper: if sing-box is already running and wwan0
-        #    transitions from no IPv4 to IPv4, restart sing-box once so its TUN/
-        #    routing state is rebuilt after a 4G reconnect. It never starts the
-        #    proxy by itself and never changes the modem mode/APN.
-        mkdir -p package/ufi103s-proxy/root/{etc/init.d,usr/sbin}
-        cat > package/ufi103s-proxy/Makefile <<'EOF'
-        include $(TOPDIR)/rules.mk
-        PKG_NAME:=ufi103s-proxy
-        PKG_RELEASE:=1
-        include $(INCLUDE_DIR)/package.mk
-        define Package/ufi103s-proxy
-          SECTION:=net
-          CATEGORY:=Network
-          TITLE:=UFI103S sing-box WAN recovery helper
-          DEPENDS:=+sing-box-tiny
-        endef
-        define Build/Compile
-        endef
-
-        define Package/ufi103s-proxy/install
-          $(CP) ./root/* $(1)/
-        endef
-        $(eval $(call BuildPackage,ufi103s-proxy))
-        EOF
-
-        cat > package/ufi103s-proxy/root/etc/init.d/ufi103s-proxy-watch <<'EOF'
-        #!/bin/sh /etc/rc.common
-        START=98
-        STOP=10
-        USE_PROCD=1
-        
-        start_service() {
-          procd_open_instance
-          procd_set_param command /usr/sbin/ufi103s-proxy-watch
-          procd_set_param respawn 3600 5 0
-          procd_close_instance
-        }
-        EOF
-        chmod 0755 package/ufi103s-proxy/root/etc/init.d/ufi103s-proxy-watch
-
-        cat > package/ufi103s-proxy/root/usr/sbin/ufi103s-proxy-watch <<'EOF'
-        #!/bin/sh
-        STATE=/tmp/ufi103s_proxy_wan_state
-        OLD=0
-        [ -r "$STATE" ] && OLD=$(cat "$STATE" 2>/dev/null || echo 0)
-        while :; do
-          NEW=0
-          if ip link show wwan0 >/dev/null 2>&1 && ip -4 addr show dev wwan0 | grep -q 'inet '; then
-            NEW=1
-          fi
-          if [ "$OLD" = 0 ] && [ "$NEW" = 1 ] && pidof sing-box >/dev/null 2>&1; then
-            if [ -x /etc/init.d/homeproxy ]; then
-              /etc/init.d/homeproxy restart >/dev/null 2>&1 || true
-            elif [ -x /etc/init.d/sing-box ]; then
-              /etc/init.d/sing-box restart >/dev/null 2>&1 || true
-            elif [ -x /etc/init.d/singbox ]; then
-              /etc/init.d/singbox restart >/dev/null 2>&1 || true
-            fi
-          fi
-          OLD=$NEW
-          echo "$OLD" > "$STATE"
-          sleep 10
-        done
-        EOF
-        chmod 0755 package/ufi103s-proxy/root/usr/sbin/ufi103s-proxy-watch
-
-        for pkg in luci-app-homeproxy luci-i18n-homeproxy-zh-cn ufi103s-modem ufi103s-proxy; do
-          CFG="CONFIG_PACKAGE_${pkg}"
-          if grep -q "^# ${CFG} is not set$" .config; then
-            sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
-          elif grep -q "^${CFG}=" .config; then
-            sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
-          else
-            echo "${CFG}=y" >> .config
-          fi
-        done
-
-        echo "UFI103S UI packages enabled:"
-        grep -E '^CONFIG_PACKAGE_(luci-proto-modemmanager|luci-app-homeproxy|ufi103s-modem|ufi103s-proxy)=' .config || true
-
-        echo "Validating custom package Makefiles:"
-        test -s package/ufi103s-modem/Makefile
-        test -s package/ufi103s-proxy/Makefile
-        grep -q 'define Build/Compile' package/ufi103s-modem/Makefile
-        grep -q 'define Build/Compile' package/ufi103s-proxy/Makefile
-        echo "Custom files-only package validation: PASS"
-
-    - name: Ensure transparent proxy packages
-      if: ${{ inputs.profile == 'ufi103s' }}
-      run: |
-        cd openwrt
-
-        echo "=========================================="
-        echo "Ensure UFI103S transparent proxy packages"
-        echo "=========================================="
-
-        for pkg in           sing-box-tiny           kmod-tun           kmod-nft-tproxy           kmod-nft-socket           kmod-wireguard           wireguard-tools           luci-proto-wireguard
-        do
-          CFG="CONFIG_PACKAGE_${pkg}"
-          if grep -q "^# ${CFG} is not set$" .config; then
-            sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
-          elif grep -q "^${CFG}=" .config; then
-            sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
-          else
-            echo "${CFG}=y" >> .config
-          fi
-        done
-
-        echo "Required UFI103S packages before defconfig:"
-        grep -E '^CONFIG_PACKAGE_(sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket|kmod-wireguard|wireguard-tools|luci-proto-wireguard)=' .config || true
-
-    - name: SSH 调试有效时间6h! 连接后输入q 输入exit即可退出，自动继续后续编译流程
-      uses: mxschmitt/action-tmate@master
-      if: ${{ inputs.ssh || contains(github.event.action, 'ssh') }}
-      
-      
-    - name: Config defconfig
-      id: config
-      run: |
-        cd openwrt
-
-        echo "=========================================="
-        echo "Running OpenWrt defconfig"
-        echo "=========================================="
-
-        make defconfig
-
-        echo "=========================================="
-        echo "Checking final OpenWrt configuration"
-        echo "=========================================="
-
-        echo "--- Target device ---"
-        grep -E '^CONFIG_TARGET.*DEVICE.*=y' .config || {
-          echo "ERROR: target device is missing!"
-          exit 1
-        }
-
-        echo "--- sing-box ---"
-        grep -E '^CONFIG_PACKAGE_sing-box(-tiny)?=' .config || true
-
-        if [ "${{ inputs.profile }}" = "ufi103s" ]; then
-          grep -q '^CONFIG_PACKAGE_sing-box-tiny=y$' .config || {
-            echo "ERROR: sing-box-tiny is missing from final .config!"
+          grep -q '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$' .config || {
+            echo "::error::UFI-001C target is missing"
             exit 1
           }
-          for pkg in luci-proto-modemmanager luci-app-homeproxy ufi103s-modem ufi103s-proxy; do
-            grep -q "^CONFIG_PACKAGE_${pkg}=y$" .config || {
-              echo "ERROR: ${pkg} is missing from final .config!"
-              exit 1
-            }
-          done
-        fi
 
-        echo "--- Kernel config fragment ---"
-        KERNEL_CONFIG="target/linux/generic/config-6.12"
+          grep -q '^CONFIG_PACKAGE_luci-app-homeproxy=y$' .config || {
+            echo "::error::luci-app-homeproxy is missing"
+            exit 1
+          }
 
-        if [ ! -f "$KERNEL_CONFIG" ]; then
-          echo "ERROR: $KERNEL_CONFIG not found!"
-          exit 1
-        fi
+          # HomeProxy depends on the virtual package "sing-box".
+          # sing-box-tiny PROVIDES:=sing-box, so it satisfies that dependency
+          # while keeping the UFI-001C image smaller.
+          grep -q '^CONFIG_PACKAGE_sing-box-tiny=y$' .config || {
+            echo "::error::sing-box-tiny is missing"
+            exit 1
+          }
 
-        grep -E '^CONFIG_IP_(ADVANCED_ROUTER|MULTIPLE_TABLES)=' "$KERNEL_CONFIG" || {
-          echo "ERROR: IPv4 policy routing options are missing!"
-          exit 1
-        }
-
-        test "$(grep -c '^CONFIG_IP_ADVANCED_ROUTER=y$' "$KERNEL_CONFIG")" -eq 1 || {
-          echo "ERROR: CONFIG_IP_ADVANCED_ROUTER is not exactly y!"
-          exit 1
-        }
-
-        test "$(grep -c '^CONFIG_IP_MULTIPLE_TABLES=y$' "$KERNEL_CONFIG")" -eq 1 || {
-          echo "ERROR: CONFIG_IP_MULTIPLE_TABLES is not exactly y!"
-          exit 1
-        }
-
-        echo "=========================================="
-        echo "Final IPv4 policy routing options:"
-        echo "=========================================="
-        grep -E '^CONFIG_IP_(ADVANCED_ROUTER|MULTIPLE_TABLES)=' "$KERNEL_CONFIG"
-
-        echo "=========================================="
-        echo "Configuration check completed successfully"
-        echo "=========================================="
-       
-    - name: Download package
-      id: package
-      run: |
-        cd openwrt
-        make download -j4 V=s
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: 查看 openwrt 目录
-      run: ls -la openwrt/
-      
-           ls -l .config
-      
-           ls -la openwrt/.config
-
- 
-    - name: 自动上传最新源码生成.config编译配置
-      uses: actions/upload-artifact@main
-      with:
-       name: build-config
-       path: |
-         ${{ github.workspace }}/openwrt/.config
-         ${{ github.workspace }}/openwrt/feeds.conf.default
-       include-hidden-files: true
-
-
-    - name: Compile the firmware
-      id: compile
-      run: |
-        cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-
-    - name: Get kernel version
-      run: |
-        KERNEL_VER=$(cat /mnt/openwrt/build_dir/target-*/linux-*/linux-*/.kernelversion 2>/dev/null | head -1 || echo "未知")
-        echo "KERNEL_VER=$KERNEL_VER" >> $GITHUB_ENV
-
-
-    - name: Check space usage
-      if: (!cancelled())
-      run: df -hT
-
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
-
-    - name: Organize files
-      id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        PROFILE=${{ github.event.inputs.profile }}
-
-        # 创建刷机包目录并打包 zip
-        mkdir -p flash_package
-        BOOT_IMG=$(ls *boot.img.gz *boot.img 2>/dev/null | head -1)
-        SYSTEM_IMG=$(ls *system.img.gz *system.img 2>/dev/null | head -1)
-        if [ -z "$BOOT_IMG" ] || [ -z "$SYSTEM_IMG" ]; then
-          echo "::error::固件文件未找到，编译可能失败！当前目录文件："
-          ls -la
-          exit 1
-        fi
-        cp "$BOOT_IMG" flash_package/boot.img.gz
-        cp "$SYSTEM_IMG" flash_package/system.img.gz
-        # 解压供刷机脚本使用
-        gzip -dk flash_package/boot.img.gz
-        gzip -dk flash_package/system.img.gz
-        rm flash_package/boot.img.gz flash_package/system.img.gz
-        cp -r $GITHUB_WORKSPACE/刷机脚本/. flash_package/
-        # 确保 bat 文件是 CRLF 换行（Windows 兼容）
-        if command -v unix2dos >/dev/null 2>&1; then
-          unix2dos flash_package/*.bat
-        else
-          sed -i 's/\r$//' flash_package/*.bat
-          sed -i 's/$/\r/' flash_package/*.bat
-        fi
-        ZIP_NAME="OpenWrt_${PROFILE}${{ env.FILE_DATE }}_刷机包.zip"
-        cd flash_package && zip -r "../$ZIP_NAME" . && cd ..
-
-        # 整理 release 目录：zip + 单独固件 + 编译信息
-        mkdir -p release_files
-        mv "$ZIP_NAME" release_files/
-        cp *.manifest release_files/ 2>/dev/null || true
-        cp *.buildinfo release_files/ 2>/dev/null || true
-        cp sha256sums release_files/ 2>/dev/null || true
-
-        echo "FIRMWARE=$PWD/release_files" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
-
-    - name: Generate release tag
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-        PROFILE=${{ github.event.inputs.profile }}
-        # 提取用户设置的 IP 和主机名
-        RAW='${{ inputs.extra_packages }}'
-        CUSTOM_IP=$(echo "$RAW" | grep -oP '(?<=__ip__)[^,\s]+' || true)
-        CUSTOM_HOSTNAME=$(echo "$RAW" | grep -oP '(?<=__hostname__)[^,\s]+' || true)
-        DISPLAY_IP=${CUSTOM_IP:-192.168.1.1}
-        DISPLAY_HOSTNAME=${CUSTOM_HOSTNAME:-ImmortalWrt}
-        # 过滤掉特殊前缀，只显示真正的包名
-        EXTRA=$(echo "$RAW" | sed 's/,/ /g' | tr ' ' '\n' | grep -v '^__ip__' | grep -v '^__hostname__' | sed '/^$/d')
-
-        echo "release_tag=$(date +"%Y.%m.%d-%H%M")-${PROFILE}" >> $GITHUB_OUTPUT
-        touch release.txt
-        {
-          echo "## Immortalwrt master分支 高通410系列 · ${PROFILE}"
-          echo ""
-          echo "| 项目 | 信息 |"
-          echo "|------|------|"
-          echo "| 编译者 | ${{ github.actor }} |"
-          echo "| 机型 | ${PROFILE} |"
-          echo "| 内核版本 | ${{ env.KERNEL_VER }} |"
-          echo "| 管理地址 | ${DISPLAY_IP} |"
-          echo "| 主机名 | ${DISPLAY_HOSTNAME} |"
-          echo "| 默认用户 | root |"
-          echo "| 默认密码 | 空 |"
-          echo ""
-          if [ -n "$EXTRA" ]; then
-            echo "### 额外添加的包"
-            echo "$EXTRA" | sed 's/^/- /'
-          else
-            echo "### 额外添加的包"
-            echo "无"
+          if grep -q '^CONFIG_PACKAGE_sing-box=y$' .config; then
+            echo "::warning::Full sing-box is also enabled; image will be larger."
           fi
-        } >> release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
 
+          grep -q '^CONFIG_PACKAGE_ufi001c-control=y$' .config || {
+            echo "::error::ufi001c-control is missing"
+            exit 1
+          }
 
+          echo "=== Modem firmware configuration ==="
+          grep -E \
+            'qcom-msm8916-modem-openstick-ufi001c-firmware|qcom-msm8916-openstick-ufi001c-wcnss-firmware|qcom-msm8916-wcnss-openstick-ufi001c-nv' \
+            .config || true
 
-    - name: Generate file list
-      if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success'
-      run: |
-        find ${{ env.FIRMWARE }} -type f > file_list.txt
-        echo "Collected files:"
-        cat file_list.txt
-        test -s file_list.txt || { echo "::error::No firmware files found"; exit 1; }
+          echo "=== HomeProxy ==="
+          grep -E '^CONFIG_PACKAGE_(luci-app-homeproxy|sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket)=' .config || true
 
+      - name: Download sources
+        working-directory: /mnt/openwrt
+        run: |
+          make download -j4 V=s
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
 
+      - name: Upload final config
+        uses: actions/upload-artifact@v4
+        with:
+          name: UFI001C-build-config
+          path: |
+            /mnt/openwrt/.config
+            /mnt/openwrt/feeds.conf.default
+          include-hidden-files: true
 
-    - name: Upload firmware to release
-      if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success'
-      uses: ncipollo/release-action@main
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag: ${{ steps.tag.outputs.release_tag }}
-        bodyFile: release.txt
-        artifacts: ${{ env.FIRMWARE }}/**/*
-        artifactErrorsFailBuild: false
-        allowUpdates: true
-        draft: false
-        prerelease: false
+      - name: Compile firmware
+        working-directory: /mnt/openwrt
+        run: |
+          echo "CPU threads: $(nproc)"
+          make -j"$(nproc)" || make -j1 V=s
 
-    - name: Delete old workflow runs via GitHub API
-      if: always()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RETAIN_DAYS: 7
-        KEEP_MINIMUM_RUNS: 5
-      run: |
-        RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=100")
-        CUTOFF=$(date -d "-${RETAIN_DAYS} days" +%s)
-        DEL_IDS=$(echo "$RUNS" | jq -r --arg cutoff "$CUTOFF" --argjson keep "$KEEP_MINIMUM_RUNS" '
-          [.workflow_runs[]
-            | select((now - (.created_at | fromdateiso8601)) > ($cutoff | tonumber))
-            | {id, created_at}
-          ]
-          | sort_by(.created_at)
-          | .[:-$keep]
-          | .[].id
-        ')
-        if [[ -z "$DEL_IDS" ]]; then
-          echo "No old runs to delete."
-        else
-          echo "$DEL_IDS" | while read run_id; do
-            echo "Deleting run $run_id"
-            curl -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$run_id"
-          done
-        fi
+      - name: Collect firmware
+        run: |
+          cd /mnt/openwrt/bin/targets/*/*
+
+          echo "=== Firmware files ==="
+          find . -maxdepth 1 -type f -printf '%f\n' | sort
+
+          mkdir -p release_files
+
+          cp *.manifest release_files/ 2>/dev/null || true
+          cp *.buildinfo release_files/ 2>/dev/null || true
+          cp sha256sums release_files/ 2>/dev/null || true
+
+          find . \
+            -maxdepth 1 \
+            -type f \
+            \( -name '*sysupgrade*' -o -name '*factory*' -o -name '*boot.img*' -o -name '*system.img*' \) \
+            -exec cp {} release_files/ \;
+
+          test -n "$(find release_files -type f -print -quit)" || {
+            echo "::error::No firmware files collected"
+            exit 1
+          }
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-UFI001C
+          path: /mnt/openwrt/bin/targets/*/*/release_files/*
+          if-no-files-found: error
+
+      - name: Create release
+        if: success()
+        uses: ncipollo/release-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: "ufi001c-${{ github.run_number }}"
+          name: "UFI-001C Build #${{ github.run_number }}"
+          body: |
+            ## UFI-001C
+
+            Target:
+            `openstick-ufi001c`
+
+            Included:
+            - Dedicated UFI-001C Qualcomm modem firmware package
+            - WCNSS firmware/NV for UFI-001C
+            - ModemManager LuCI protocol
+            - HomeProxy
+            - sing-box-tiny
+            - UFI-001C LuCI control page
+            - 3G / 4G / 3G+4G selection
+            - HomeProxy enable/disable
+            - Subscription URL configuration
+
+            The subscription URL is NOT embedded in this GitHub workflow.
+            Enter it locally from LuCI after flashing.
+
+          artifacts: /mnt/openwrt/bin/targets/*/*/release_files/*
+          artifactErrorsFailBuild: false
+          allowUpdates: true
+          draft: false
+          prerelease: false
