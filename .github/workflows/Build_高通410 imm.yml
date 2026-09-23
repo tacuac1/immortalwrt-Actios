@@ -230,10 +230,27 @@ jobs:
                  staging_dir/host/stamp/.apk_* \
                  staging_dir/host/bin/apk
 
+          echo "=== Build required OpenWrt host compression tool ==="
+          # Lua's host build uses libdeflate-gzip during extraction. The previous
+          # run failed because staging_dir/host/bin/libdeflate-gzip did not exist.
+          # Build this OpenWrt host tool through its own target instead of using
+          # a system replacement.
+          test -f tools/libdeflate/Makefile || {
+            echo "::error::tools/libdeflate/Makefile is missing"
+            exit 1
+          }
+          make tools/libdeflate/compile V=s -j1 2>&1 | tee /tmp/libdeflate-host-compile.log
+
+          test -x staging_dir/host/bin/libdeflate-gzip || {
+            echo "::error::libdeflate-gzip was not installed by tools/libdeflate"
+            find staging_dir/host/bin -maxdepth 1 -type f -name 'libdeflate*' -print 2>/dev/null || true
+            exit 1
+          }
+          staging_dir/host/bin/libdeflate-gzip --version || true
+
           echo "=== Let OpenWrt resolve ALL APK host dependencies ==="
-          # Do not call package/utils/lua/host-compile: that path is not stable
-          # across OpenWrt/ImmortalWrt trees. APK itself declares lua/host and
-          # HostBuild, so the top-level build system must resolve it.
+          # APK declares lua/host itself. Do not call a guessed Lua package path
+          # or manually run Meson/Ninja; OpenWrt resolves the dependency chain.
           make package/system/apk/host/compile V=s -j1 2>&1 | tee /tmp/apk-host-compile.log
 
           test -x staging_dir/host/bin/apk || {
@@ -268,6 +285,7 @@ jobs:
           name: UFI001C-APK-host-diagnostic
           path: |
             /tmp/apk-host-compile.log
+            /tmp/libdeflate-host-compile.log
           if-no-files-found: warn
 
       - name: Add HomeProxy
