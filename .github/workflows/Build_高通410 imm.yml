@@ -165,7 +165,7 @@ jobs:
           fi
 
 
-      - name: Select APK package manager and prepare build system
+      - name: Prepare UFI-001C package build system
         working-directory: ${{ github.workspace }}/openwrt
         env:
           TERM: xterm
@@ -173,72 +173,72 @@ jobs:
           set -e
           export TERM=xterm
 
-          echo "=== Select APK package manager ==="
+          echo "=== Verify UFI-001C target configuration ==="
+          grep -E '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$|^CONFIG_TARGET_PROFILE="DEVICE_openstick-ufi001c"$' .config || {
+            echo "::error::UFI-001C target is missing from .config"
+            exit 1
+          }
 
-          # The UFI-001C config currently selects the legacy opkg package
-          # manager, but this source tree does not expose a usable
-          # package/system/opkg/host/compile target. Do not patch opkg or
-          # manufacture package metadata. Use the build system's native APK
-          # path instead.
-          if grep -q '^# CONFIG_USE_APK is not set$' .config; then
-            sed -i 's/^# CONFIG_USE_APK is not set$/CONFIG_USE_APK=y/' .config
-          elif grep -q '^CONFIG_USE_APK=' .config; then
-            sed -i 's/^CONFIG_USE_APK=.*/CONFIG_USE_APK=y/' .config
-          else
-            echo 'CONFIG_USE_APK=y' >> .config
+          echo "=== Keep the package manager selected by this UFI-001C config: opkg ==="
+          # Do not switch this device build to APK. The UFI-001C config supplied
+          # by the repository selects the legacy OpenWrt opkg path.
+          sed -i '/^CONFIG_USE_APK=/d' .config
+          sed -i '/^# CONFIG_USE_APK is not set$/d' .config
+          grep -q '^CONFIG_PACKAGE_opkg=y$' .config || echo 'CONFIG_PACKAGE_opkg=y' >> .config
+
+          echo "=== Verify/repair opkg HostBuild definition ==="
+          test -f package/system/opkg/Makefile || {
+            echo "::error::package/system/opkg/Makefile is missing from the selected source tree"
+            exit 1
+          }
+
+          # The package/Makefile requires opkg/host/compile when APK is disabled.
+          # Some ImmortalWrt forks carry the opkg package but omit its HostBuild
+          # declaration. Add only the missing standard declarations; never replace
+          # an existing opkg Makefile.
+          if ! grep -Fq 'include $(INCLUDE_DIR)/host-build.mk' package/system/opkg/Makefile; then
+            printf '\ninclude $(INCLUDE_DIR)/host-build.mk\n' >> package/system/opkg/Makefile
           fi
 
-          # Explicitly disable the old opkg package selection if present.
-          if grep -q '^CONFIG_PACKAGE_opkg=' .config; then
-            sed -i 's/^CONFIG_PACKAGE_opkg=.*/# CONFIG_PACKAGE_opkg is not set/' .config
+          if ! grep -Fq '$(eval $(call HostBuild))' package/system/opkg/Makefile; then
+            printf '\n$(eval $(call HostBuild))\n' >> package/system/opkg/Makefile
           fi
 
-          # Remove stale opkg host metadata created by previous workflow logic.
-          rm -f tmp/.packagedeps tmp/.packageinfo tmp/.packageauxvars tmp/.packageusergroup 2>/dev/null || true
+          echo "--- opkg Makefile HostBuild lines ---"
+          grep -n -E 'host-build.mk|HostBuild' package/system/opkg/Makefile
 
           echo "=== Defconfig ==="
           make defconfig
 
-          echo "=== Package manager configuration ==="
-          grep -E '^CONFIG_USE_APK=|^CONFIG_PACKAGE_opkg=|^# CONFIG_PACKAGE_opkg is not set|^CONFIG_PACKAGE_apk-mbedtls=' .config || true
+          echo "=== Final package-manager configuration ==="
+          grep -E '^CONFIG_USE_APK=|^# CONFIG_USE_APK is not set$|^CONFIG_PACKAGE_opkg=' .config || true
 
-          grep -q '^CONFIG_USE_APK=y$' .config || {
-            echo "::error::CONFIG_USE_APK=y was not accepted by defconfig"
-            exit 1
-          }
-
-          if grep -q '^CONFIG_PACKAGE_opkg=y$' .config; then
-            echo "::error::opkg is still enabled after switching to APK"
+          if grep -q '^CONFIG_USE_APK=y$' .config; then
+            echo "::error::CONFIG_USE_APK=y was unexpectedly enabled"
             exit 1
           fi
 
-          # APK is built with Meson/Ninja. This source tree does not provide
-          # feeds/packages/devel/ninja, so do not require that feed path.
-          # Install the Ubuntu Ninja binary and expose it at the exact host
-          # staging path expected by the APK Meson build.
-          echo "=== Prepare host tool: ninja ==="
-          command -v ninja
-          ninja --version
-          mkdir -p staging_dir/host/bin
-          install -m 0755 "$(command -v ninja)" staging_dir/host/bin/ninja
-          test -x staging_dir/host/bin/ninja || {
-            echo "::error::ninja host binary was not installed at staging_dir/host/bin/ninja"
+          grep -q '^CONFIG_PACKAGE_opkg=y$' .config || {
+            echo "::error::opkg is not enabled after defconfig"
             exit 1
           }
-          staging_dir/host/bin/ninja --version
 
-          # APK itself provides a HostBuild target. Verify the target before
-          # starting the long firmware compilation.
-          echo "=== Verify APK host target ==="
-          make -n package/system/apk/host/compile V=s > /tmp/apk-host-target.log 2>&1 || {
-            cat /tmp/apk-host-target.log
-            echo "::error::package/system/apk/host/compile is unavailable"
+          echo "=== Verify opkg host target before long build ==="
+          make -n package/system/opkg/host/compile V=s > /tmp/opkg-host-target.log 2>&1 || {
+            cat /tmp/opkg-host-target.log
+            echo "::error::package/system/opkg/host/compile is still unavailable after HostBuild repair"
             exit 1
           }
-          tail -n 50 /tmp/apk-host-target.log
+          tail -n 80 /tmp/opkg-host-target.log
 
-          echo "=== Build APK host ==="
-          make package/system/apk/host/compile V=s
+          echo "=== Build opkg host tool ==="
+          make package/system/opkg/host/compile V=s
+
+          test -x staging_dir/host/bin/opkg || {
+            echo "::error::opkg host binary was not installed at staging_dir/host/bin/opkg"
+            exit 1
+          }
+          staging_dir/host/bin/opkg --version || true
 
       - name: Add HomeProxy
         working-directory: ${{ github.workspace }}/openwrt
