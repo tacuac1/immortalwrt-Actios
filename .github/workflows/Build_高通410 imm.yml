@@ -230,23 +230,24 @@ jobs:
                  staging_dir/host/stamp/.apk_* \
                  staging_dir/host/bin/apk
 
-          echo "=== Build required OpenWrt host compression tool ==="
-          # Lua's host build uses libdeflate-gzip during extraction. The previous
-          # run failed because staging_dir/host/bin/libdeflate-gzip did not exist.
-          # Build this OpenWrt host tool through its own target instead of using
-          # a system replacement.
-          test -f tools/libdeflate/Makefile || {
-            echo "::error::tools/libdeflate/Makefile is missing"
-            exit 1
-          }
-          make tools/libdeflate/compile V=s -j1 2>&1 | tee /tmp/libdeflate-host-compile.log
+          echo "=== Build and install the complete OpenWrt host toolset ==="
+          # Do not build individual host tools one-by-one. The previous runs
+          # exposed missing host tools (libdeflate-gzip, then sed) because the
+          # APK target was invoked before the normal OpenWrt tools stage.
+          # OpenWrt's standard tools/install target builds and installs the
+          # complete host toolset in the correct dependency order.
+          make tools/install V=s -j2 2>&1 | tee /tmp/openwrt-tools-install.log
 
-          test -x staging_dir/host/bin/libdeflate-gzip || {
-            echo "::error::libdeflate-gzip was not installed by tools/libdeflate"
-            find staging_dir/host/bin -maxdepth 1 -type f -name 'libdeflate*' -print 2>/dev/null || true
-            exit 1
-          }
-          staging_dir/host/bin/libdeflate-gzip --version || true
+          echo "=== Verify required host tools ==="
+          for tool in sed libdeflate-gzip; do
+            test -x "staging_dir/host/bin/$tool" || {
+              echo "::error::$tool was not installed in staging_dir/host/bin"
+              find staging_dir/host/bin -maxdepth 1 -type f \
+                \( -name 'sed' -o -name 'libdeflate*' \) -print 2>/dev/null || true
+              exit 1
+            }
+            echo "Found: staging_dir/host/bin/$tool"
+          done
 
           echo "=== Let OpenWrt resolve ALL APK host dependencies ==="
           # APK declares lua/host itself. Do not call a guessed Lua package path
@@ -285,7 +286,7 @@ jobs:
           name: UFI001C-APK-host-diagnostic
           path: |
             /tmp/apk-host-compile.log
-            /tmp/libdeflate-host-compile.log
+            /tmp/openwrt-tools-install.log
           if-no-files-found: warn
 
       - name: Add HomeProxy
