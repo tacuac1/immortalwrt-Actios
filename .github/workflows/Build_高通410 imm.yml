@@ -187,15 +187,10 @@ jobs:
             exit 1
           }
 
-          echo "=== Keep the repository's package manager selection ==="
-          # Do NOT force CONFIG_USE_APK here. The UFI-001C config shipped by
-          # this build repository was created for its own ImmortalWrt tree.
-          # The previous workflow forced APK and repeatedly hit a broken host
-          # Meson state before the actual firmware build could start.
+          echo "=== Use APK package manager ==="
           sed -i '/^CONFIG_USE_APK=/d' .config
           sed -i '/^# CONFIG_USE_APK is not set$/d' .config
           sed -i '/^CONFIG_PACKAGE_opkg=/d' .config
-
           echo 'CONFIG_USE_APK=y' >> .config
 
           echo "=== Remove stale/legacy package definitions ==="
@@ -206,148 +201,65 @@ jobs:
           echo "=== Defconfig ==="
           make defconfig
 
-          grep -E '^CONFIG_USE_APK=|^CONFIG_PACKAGE_opkg=' .config || true
           grep -q '^CONFIG_USE_APK=y$' .config || {
             echo "::error::CONFIG_USE_APK=y was not retained by defconfig"
             exit 1
           }
 
-          echo "=== Build normal OpenWrt host prerequisites ==="
-          # APK is only one host package. Let OpenWrt build its declared
-          # dependency (lua/host) and its Meson/Ninja tools normally.
-          make package/utils/lua/host-compile V=s -j2
-          make tools/ninja/compile V=s -j2
-          make tools/meson/compile V=s -j2
-
-          test -x staging_dir/host/bin/ninja || {
-            echo "::error::OpenWrt ninja host tool is missing"
-            exit 1
-          }
-          test -f staging_dir/host/bin/meson.py || {
-            echo "::error::OpenWrt Meson host tool is missing"
+          echo "=== Verify APK host build definition ==="
+          test -f package/system/apk/Makefile || {
+            echo "::error::package/system/apk/Makefile is missing"
             exit 1
           }
 
-          echo "=== Clean APK host state ==="
-          rm -rf build_dir/hostpkg/apk-3.0.5
-          rm -f staging_dir/host/stamp/.apk_installed
-          rm -f staging_dir/host/bin/apk
-
-          echo "=== Download and prepare APK source through OpenWrt ==="
-          make package/system/apk/host/download V=s
-          make package/system/apk/host/prepare V=s
-
-          APK_HOST_DIR="$(find build_dir/hostpkg -maxdepth 1 -type d -name 'apk-*' | head -n 1)"
-          test -n "$APK_HOST_DIR" || {
-            echo "::error::APK host source directory was not prepared"
-            find build_dir/hostpkg -maxdepth 2 -type d -print | head -100 || true
+          grep -q '^HOST_BUILD_DEPENDS:=lua/host' package/system/apk/Makefile || {
+            echo "::error::Unexpected APK Makefile: lua/host dependency is missing"
+            sed -n '1,110p' package/system/apk/Makefile
             exit 1
           }
 
-          test -f "$APK_HOST_DIR/meson.build" || {
-            echo "::error::APK source has no meson.build"
-            find "$APK_HOST_DIR" -maxdepth 2 -type f | head -100 || true
+          grep -q '$(eval $(call HostBuild))' package/system/apk/Makefile || {
+            echo "::error::Unexpected APK Makefile: HostBuild is missing"
+            tail -n 30 package/system/apk/Makefile
             exit 1
           }
 
-          echo "APK source: $APK_HOST_DIR"
+          echo "=== Clean ONLY APK host state ==="
+          rm -rf build_dir/hostpkg/apk-* \
+                 staging_dir/host/stamp/.apk_installed \
+                 staging_dir/host/stamp/.apk_* \
+                 staging_dir/host/bin/apk
 
-          echo "=== Generate OpenWrt Meson native file ==="
-          # Ask OpenWrt to print the exact native-file generation command,
-          # then execute only that command. This keeps the compiler/flags in
-          # sync with the active toolchain without running Meson's configure
-          # step that previously produced the broken state.
-          make -n package/system/apk/host/configure V=s > /tmp/apk-configure-plan.log 2>&1 || true
-          NATIVE_CMD="$(grep -m1 -F 'openwrt-native.txt' /tmp/apk-configure-plan.log || true)"
-          echo "Native-file command from OpenWrt:"
-          echo "$NATIVE_CMD"
+          echo "=== Let OpenWrt resolve ALL APK host dependencies ==="
+          # Do not call package/utils/lua/host-compile: that path is not stable
+          # across OpenWrt/ImmortalWrt trees. APK itself declares lua/host and
+          # HostBuild, so the top-level build system must resolve it.
+          make package/system/apk/host/compile V=s -j1 2>&1 | tee /tmp/apk-host-compile.log
 
-          if [ -z "$NATIVE_CMD" ]; then
-            echo "::error::Could not extract OpenWrt native-file generation command"
-            sed -n '1,220p' /tmp/apk-configure-plan.log || true
-            exit 1
-          fi
-
-          # The command printed by make contains the native-file redirection.
-          # Execute it verbatim so all OpenWrt host flags are preserved.
-          bash -c "$NATIVE_CMD"
-
-          test -f "$APK_HOST_DIR/openwrt-native.txt" || {
-            echo "::error::OpenWrt native file was not generated"
+          test -x staging_dir/host/bin/apk || {
+            echo "::error::APK host binary was not installed"
+            echo "=== APK host directory state ==="
+            find build_dir/hostpkg -maxdepth 3 -type d -name 'openwrt-build' -print 2>/dev/null || true
+            echo "=== APK files ==="
+            find build_dir/hostpkg -maxdepth 4 -type f -name 'apk' -print 2>/dev/null || true
             exit 1
           }
 
-          echo "=== Direct Meson setup with an explicit source directory ==="
-          APK_BUILD_DIR="$APK_HOST_DIR/openwrt-build"
-          rm -rf "$APK_BUILD_DIR"
-
-          set +e
-          VERSION=3.0.5 \
-          staging_dir/host/bin/python3 staging_dir/host/bin/meson.py \
-            setup \
-            --native-file "$APK_HOST_DIR/openwrt-native.txt" \
-            -Ddefault_library=static \
-            -Db_lto=true \
-            -Ddocs=disabled \
-            -Dhelp=enabled \
-            -Dlua_version=5.1 \
-            -Durl_backend=wget \
-            -Dzstd=disabled \
-            -Dpython=disabled \
-            -Dtests=disabled \
-            -Dcrypto_backend=openssl \
-            "$APK_BUILD_DIR" \
-            "$APK_HOST_DIR" 2>&1 | tee /tmp/apk-meson-setup.log
-          MESON_STATUS=${PIPESTATUS[0]}
-          set -e
-
-          echo "=== Meson setup exit code: $MESON_STATUS ==="
-          tail -n 200 /tmp/apk-meson-setup.log || true
-
-          if [ "$MESON_STATUS" -ne 0 ]; then
-            echo "::error::Meson setup for APK failed"
-            exit "$MESON_STATUS"
-          fi
-
-          test -d "$APK_BUILD_DIR" || {
-            echo "::error::Meson reported success but did not create openwrt-build"
-            find "$APK_HOST_DIR" -maxdepth 2 -print | sort | head -200 || true
-            exit 1
-          }
-
-          test -f "$APK_BUILD_DIR/build.ninja" || {
-            echo "::error::Meson created openwrt-build but no build.ninja"
-            find "$APK_BUILD_DIR" -maxdepth 2 -type f | head -100 || true
-            exit 1
-          }
-
-          echo "=== Build APK host with the generated Meson build tree ==="
-          set +e
-          staging_dir/host/bin/ninja -j1 -C "$APK_BUILD_DIR" 2>&1 | tee /tmp/apk-ninja.log
-          APK_NINJA_STATUS=${PIPESTATUS[0]}
-          set -e
-
-          if [ "$APK_NINJA_STATUS" -ne 0 ]; then
-            echo "::error::APK Ninja build failed"
-            tail -n 250 /tmp/apk-ninja.log || true
-            exit "$APK_NINJA_STATUS"
-          fi
-
-          echo "=== Install APK host binary ==="
-          test -f "$APK_BUILD_DIR/src/apk" || {
-            echo "::error::APK binary was not produced"
-            find "$APK_BUILD_DIR" -maxdepth 3 -type f -name 'apk' -print || true
-            exit 1
-          }
-          install -Dm755 "$APK_BUILD_DIR/src/apk" staging_dir/host/bin/apk
+          echo "=== APK host tool ==="
           staging_dir/host/bin/apk --version || true
 
-          echo "=== Mark APK host installed for this workflow ==="
-          mkdir -p staging_dir/host/stamp
-          touch staging_dir/host/stamp/.apk_installed
-
-          cp /tmp/apk-meson-setup.log /tmp/apk-host-compile.log
-          cat /tmp/apk-ninja.log >> /tmp/apk-host-compile.log
+          echo "=== Verify Meson build tree ==="
+          APK_BUILD_DIR="$(find build_dir/hostpkg -maxdepth 2 -type d -path '*/apk-*/openwrt-build' | head -n 1 || true)"
+          if [ -n "$APK_BUILD_DIR" ]; then
+            test -f "$APK_BUILD_DIR/build.ninja" || {
+              echo "::error::APK openwrt-build exists but build.ninja is missing"
+              find "$APK_BUILD_DIR" -maxdepth 2 -type f | head -100 || true
+              exit 1
+            }
+            echo "APK Meson build directory: $APK_BUILD_DIR"
+          else
+            echo "::warning::APK Meson build directory was cleaned after successful install; continuing"
+          fi
 
       - name: Upload APK host diagnostic log
         if: always()
@@ -355,8 +267,6 @@ jobs:
         with:
           name: UFI001C-APK-host-diagnostic
           path: |
-            /tmp/apk-meson-setup.log
-            /tmp/apk-ninja.log
             /tmp/apk-host-compile.log
           if-no-files-found: warn
 
