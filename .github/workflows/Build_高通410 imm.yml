@@ -254,16 +254,40 @@ jobs:
           rm -rf build_dir/hostpkg/apk-3.0.5
           rm -f staging_dir/host/stamp/.apk_installed
 
-          make package/system/apk/host/compile V=s -j1
+          echo "=== Compile APK host; preserve the COMPLETE failure log ==="
+          set +e
+          make package/system/apk/host/compile V=s -j1 2>&1 | tee /tmp/apk-host-compile.log
+          APK_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          echo "=== APK host compile exit code: $APK_STATUS ==="
+          echo "=== Last 250 lines of APK host log ==="
+          tail -n 250 /tmp/apk-host-compile.log || true
 
           APK_HOST_DIR="$(find build_dir/hostpkg -maxdepth 1 -type d -name 'apk-*' | head -n 1)"
+          echo "=== APK host directory ==="
+          echo "${APK_HOST_DIR:-<none>}"
+          if [ -n "$APK_HOST_DIR" ]; then
+            echo "=== APK host state ==="
+            find "$APK_HOST_DIR" -maxdepth 2 -type f \
+              \( -name '.prepared*' -o -name '.configured*' -o -name '.built' \) \
+              -print | sort || true
+            echo "=== APK host directories ==="
+            find "$APK_HOST_DIR" -maxdepth 2 -type d -print | sort || true
+          fi
+
+          if [ "$APK_STATUS" -ne 0 ]; then
+            echo "::error::APK host build failed. The real error is above; do not hide it behind 'target unavailable'."
+            exit "$APK_STATUS"
+          fi
+
           test -n "$APK_HOST_DIR" || {
-            echo "::error::APK host directory disappeared after compile"
+            echo "::error::APK host directory disappeared after successful compile"
             find build_dir/hostpkg -maxdepth 2 -type d -print | head -100 || true
             exit 1
           }
           test -d "$APK_HOST_DIR/openwrt-build" || {
-            echo "::error::APK host compile finished without a Meson build directory"
+            echo "::error::APK host compile succeeded but Meson build directory is missing"
             find "$APK_HOST_DIR" -maxdepth 2 -type d -print || true
             exit 1
           }
@@ -276,6 +300,16 @@ jobs:
 
           echo "=== APK host tool ready ==="
           staging_dir/host/bin/apk --version || true
+
+      - name: Upload APK host diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UFI001C-APK-host-diagnostic
+          path: |
+            /tmp/apk-host-plan.log
+            /tmp/apk-host-compile.log
+          if-no-files-found: warn
 
       - name: Add HomeProxy
         working-directory: ${{ github.workspace }}/openwrt
