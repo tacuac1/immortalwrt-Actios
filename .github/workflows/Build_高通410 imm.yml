@@ -130,20 +130,28 @@ jobs:
             cp -a "$GITHUB_WORKSPACE/files" ./files
           fi
 
-          if [ -f "$GITHUB_WORKSPACE/feeds.conf.default" ]; then
-            cp "$GITHUB_WORKSPACE/feeds.conf.default" ./feeds.conf.default
-          fi
-
-          if [ -f "$GITHUB_WORKSPACE/diy-part1.sh" ]; then
-            chmod +x "$GITHUB_WORKSPACE/diy-part1.sh"
-            "$GITHUB_WORKSPACE/diy-part1.sh"
-          fi
+          # Use the selected ImmortalWrt source's own feeds.conf.default.
+          # Do NOT import the old build repository feeds here: its optional
+          # small-package feed introduces OpenAppFilter/kmod-oaf and can make
+          # current Kconfig fail with a recursive dependency before defconfig.
+          echo "=== Using upstream ImmortalWrt feeds.conf.default ==="
+          grep -E '^src-(git|hg|svn|bzr|link)' feeds.conf.default || true
 
       - name: Update feeds
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
+
+          echo "=== Check for unwanted OpenAppFilter/OAF package definitions ==="
+          if grep -RIl --include='Makefile' 'KernelPackage/oaf\|kmod-oaf' package/feeds 2>/dev/null | head -20 | grep -q .; then
+            echo "::warning::OAF package definition found in installed feeds; removing its package directories"
+            grep -RIl --include='Makefile' 'KernelPackage/oaf\|kmod-oaf' package/feeds 2>/dev/null | while read -r f; do
+              d=$(dirname "$f")
+              echo "Removing OAF package directory: $d"
+              rm -rf "$d"
+            done
+          fi
 
       - name: Load UFI-001C configuration
         working-directory: ${{ github.workspace }}/openwrt
@@ -159,10 +167,10 @@ jobs:
             '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c|^CONFIG_DEFAULT_qcom-msm8916-modem-openstick-ufi001c-firmware|^CONFIG_DEFAULT_qcom-msm8916-openstick-ufi001c-wcnss-firmware|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv' \
             .config || true
 
-          if [ -f "$GITHUB_WORKSPACE/diy-part2.sh" ]; then
-            chmod +x "$GITHUB_WORKSPACE/diy-part2.sh"
-            "$GITHUB_WORKSPACE/diy-part2.sh"
-          fi
+          # Do not execute the old diy-part2.sh here. It was written for the
+          # multi-device legacy workflow (including UFI103S) and can inject
+          # unrelated packages into the UFI-001C configuration. All UFI-001C
+          # custom packages are generated explicitly below.
 
 
       - name: Prepare UFI-001C package build system
@@ -179,66 +187,54 @@ jobs:
             exit 1
           }
 
-          echo "=== Keep the package manager selected by this UFI-001C config: opkg ==="
-          # Do not switch this device build to APK. The UFI-001C config supplied
-          # by the repository selects the legacy OpenWrt opkg path.
+          echo "=== Use the package manager selected by current ImmortalWrt ==="
+          # Current ImmortalWrt master defaults CONFIG_USE_APK=y. Do not force
+          # the old opkg path from the historical UFI config; that path caused
+          # repeated host-build failures on this newer build system.
           sed -i '/^CONFIG_USE_APK=/d' .config
           sed -i '/^# CONFIG_USE_APK is not set$/d' .config
-          grep -q '^CONFIG_PACKAGE_opkg=y$' .config || echo 'CONFIG_PACKAGE_opkg=y' >> .config
+          sed -i '/^CONFIG_PACKAGE_opkg=/d' .config
+          echo 'CONFIG_USE_APK=y' >> .config
 
-          echo "=== Verify/repair opkg HostBuild definition ==="
-          test -f package/system/opkg/Makefile || {
-            echo "::error::package/system/opkg/Makefile is missing from the selected source tree"
-            exit 1
-          }
-
-          # The package/Makefile requires opkg/host/compile when APK is disabled.
-          # Some ImmortalWrt forks carry the opkg package but omit its HostBuild
-          # declaration. Add only the missing standard declarations; never replace
-          # an existing opkg Makefile.
-          if ! grep -Fq 'include $(INCLUDE_DIR)/host-build.mk' package/system/opkg/Makefile; then
-            printf '\ninclude $(INCLUDE_DIR)/host-build.mk\n' >> package/system/opkg/Makefile
-          fi
-
-          if ! grep -Fq '$(eval $(call HostBuild))' package/system/opkg/Makefile; then
-            printf '\n$(eval $(call HostBuild))\n' >> package/system/opkg/Makefile
-          fi
-
-          echo "--- opkg Makefile HostBuild lines ---"
-          grep -n -E 'host-build.mk|HostBuild' package/system/opkg/Makefile
+          echo "=== Remove any stale OAF package definitions if a caller supplied a custom feed ==="
+          rm -rf package/OpenAppFilter package/new/luci-app-oaf package/feeds/*/OpenAppFilter package/feeds/*/luci-app-oaf package/feeds/*/oaf 2>/dev/null || true
+          rm -rf feeds/smpackage 2>/dev/null || true
 
           echo "=== Defconfig ==="
           make defconfig
 
           echo "=== Final package-manager configuration ==="
-          grep -E '^CONFIG_USE_APK=|^# CONFIG_USE_APK is not set$|^CONFIG_PACKAGE_opkg=' .config || true
-
-          if grep -q '^CONFIG_USE_APK=y$' .config; then
-            echo "::error::CONFIG_USE_APK=y was unexpectedly enabled"
-            exit 1
-          fi
-
-          grep -q '^CONFIG_PACKAGE_opkg=y$' .config || {
-            echo "::error::opkg is not enabled after defconfig"
+          grep -E '^CONFIG_USE_APK=|^CONFIG_PACKAGE_opkg=' .config || true
+          grep -q '^CONFIG_USE_APK=y$' .config || {
+            echo "::error::CONFIG_USE_APK=y is required for this current ImmortalWrt source"
             exit 1
           }
 
-          echo "=== Verify opkg host target before long build ==="
-          make -n package/system/opkg/host/compile V=s > /tmp/opkg-host-target.log 2>&1 || {
-            cat /tmp/opkg-host-target.log
-            echo "::error::package/system/opkg/host/compile is still unavailable after HostBuild repair"
+          echo "=== Prepare Ninja for APK/Meson host build ==="
+          test -x /usr/bin/ninja || {
+            echo "::error::system ninja-build is missing"
             exit 1
           }
-          tail -n 80 /tmp/opkg-host-target.log
+          mkdir -p staging_dir/host/bin
+          ln -sf /usr/bin/ninja staging_dir/host/bin/ninja
+          staging_dir/host/bin/ninja --version
 
-          echo "=== Build opkg host tool ==="
-          make package/system/opkg/host/compile V=s
-
-          test -x staging_dir/host/bin/opkg || {
-            echo "::error::opkg host binary was not installed at staging_dir/host/bin/opkg"
+          echo "=== Verify APK host target before long build ==="
+          make -n package/system/apk/host/compile V=s > /tmp/apk-host-target.log 2>&1 || {
+            cat /tmp/apk-host-target.log
+            echo "::error::package/system/apk/host/compile is unavailable"
             exit 1
           }
-          staging_dir/host/bin/opkg --version || true
+          tail -n 80 /tmp/apk-host-target.log
+
+          echo "=== Build APK host tool ==="
+          make package/system/apk/host/compile V=s
+
+          test -x staging_dir/host/bin/apk || {
+            echo "::error::APK host binary was not installed at staging_dir/host/bin/apk"
+            exit 1
+          }
+          staging_dir/host/bin/apk --version || true
 
       - name: Add HomeProxy
         working-directory: ${{ github.workspace }}/openwrt
