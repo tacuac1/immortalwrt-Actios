@@ -67,6 +67,7 @@ jobs:
             wget \
             curl \
             jq \
+            ninja-build \
             zip \
             p7zip-full \
             gettext-base \
@@ -211,21 +212,17 @@ jobs:
             exit 1
           fi
 
-          # apk is built with Meson/Ninja. In this fork the APK HostBuild
-          # metadata does not pull the feeds/packages ninja host tool into
-          # the host staging directory early enough, so apk reaches its build
-          # with no staging_dir/host/bin/ninja. Build that host tool explicitly
-          # before invoking the APK HostBuild.
-          echo "=== Build required host tool: ninja ==="
-          test -d feeds/packages/devel/ninja || {
-            echo "::error::feeds/packages/devel/ninja is missing after feeds install"
-            exit 1
-          }
-          make -C feeds/packages/devel/ninja host-compile V=s
-
+          # APK is built with Meson/Ninja. This source tree does not provide
+          # feeds/packages/devel/ninja, so do not require that feed path.
+          # Install the Ubuntu Ninja binary and expose it at the exact host
+          # staging path expected by the APK Meson build.
+          echo "=== Prepare host tool: ninja ==="
+          command -v ninja
+          ninja --version
+          mkdir -p staging_dir/host/bin
+          install -m 0755 "$(command -v ninja)" staging_dir/host/bin/ninja
           test -x staging_dir/host/bin/ninja || {
             echo "::error::ninja host binary was not installed at staging_dir/host/bin/ninja"
-            find staging_dir/host -maxdepth 3 -type f -name ninja -ls 2>/dev/null || true
             exit 1
           }
           staging_dir/host/bin/ninja --version
