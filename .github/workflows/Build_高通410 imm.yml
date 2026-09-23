@@ -219,7 +219,14 @@ jobs:
           ln -sf /usr/bin/ninja staging_dir/host/bin/ninja
           staging_dir/host/bin/ninja --version
 
-          echo "=== Verify APK host target before long build ==="
+          echo "=== Reset ONLY the APK host build state ==="
+          # The previous run reached ninja with a stale/incomplete Meson
+          # configure stamp: .built existed while openwrt-build/ did not.
+          # Remove only APK host state so Meson is forced to configure again.
+          rm -rf build_dir/hostpkg/apk-3.0.5
+          rm -f staging_dir/host/stamp/.apk_installed
+
+          echo "=== Verify APK host target ==="
           make -n package/system/apk/host/compile V=s > /tmp/apk-host-target.log 2>&1 || {
             cat /tmp/apk-host-target.log
             echo "::error::package/system/apk/host/compile is unavailable"
@@ -227,8 +234,30 @@ jobs:
           }
           tail -n 80 /tmp/apk-host-target.log
 
-          echo "=== Build APK host tool ==="
-          make package/system/apk/host/compile V=s
+          echo "=== Download APK host source ==="
+          make package/system/apk/host/download V=s
+
+          echo "=== Prepare APK host source ==="
+          make package/system/apk/host/prepare V=s
+
+          echo "=== Configure APK host with Meson ==="
+          make package/system/apk/host/configure V=s
+
+          APK_HOST_DIR="$(find build_dir/hostpkg -maxdepth 1 -type d -name 'apk-*' | head -n 1)"
+          test -n "$APK_HOST_DIR" || {
+            echo "::error::APK host build directory was not created"
+            find build_dir/hostpkg -maxdepth 2 -type d -print | head -100 || true
+            exit 1
+          }
+          test -d "$APK_HOST_DIR/openwrt-build" || {
+            echo "::error::Meson did not create APK openwrt-build directory"
+            find "$APK_HOST_DIR" -maxdepth 2 -type d -print || true
+            exit 1
+          }
+          echo "APK Meson build directory: $APK_HOST_DIR/openwrt-build"
+
+          echo "=== Compile APK host tool ==="
+          make package/system/apk/host/compile V=s -j1
 
           test -x staging_dir/host/bin/apk || {
             echo "::error::APK host binary was not installed at staging_dir/host/bin/apk"
