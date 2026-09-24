@@ -911,7 +911,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt-UFI001C
-          path: $GITHUB_WORKSPACE/openwrt/bin/targets/*/*/release_files/*
+          path: ${{ github.workspace }}/openwrt/bin/targets/*/*/release_files/*
           if-no-files-found: error
 
       - name: Create release
@@ -942,7 +942,7 @@ jobs:
             The subscription URL is NOT embedded in this GitHub workflow.
             Enter it locally from LuCI after flashing.
 
-          artifacts: $GITHUB_WORKSPACE/openwrt/bin/targets/*/*/release_files/*
+          artifacts: ${{ github.workspace }}/openwrt/bin/targets/*/*/release_files/*
           artifactErrorsFailBuild: false
           allowUpdates: true
           draft: false
