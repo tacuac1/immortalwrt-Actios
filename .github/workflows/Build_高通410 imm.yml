@@ -13,6 +13,11 @@ on:
         required: false
         default: ""
         type: string
+      ufi_modem_url:
+        description: "UFI-001C modem.bin source"
+        required: false
+        default: "https://github.com/HandsomeMod/qcom-firmware/raw/refs/heads/main/openstick-ufi001c-modem.bin"
+        type: string
 
 env:
   REPO_URL: "https://github.com/lkiuyu/immortalwrt"
@@ -510,6 +515,7 @@ jobs:
                   return 1
               }
 
+              # Keep the combined mode pattern after the exact 3g/4g cases.
               case "$MODE" in
                   3g)
                       ALLOWED="3g"
@@ -779,6 +785,86 @@ jobs:
 
           echo "=== HomeProxy ==="
           grep -E '^CONFIG_PACKAGE_(luci-app-homeproxy|sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket)=' .config || true
+
+      - name: Inject verified UFI-001C modem firmware
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -e
+
+          MODEM_URL="${{ inputs.ufi_modem_url }}"
+          MODEM_BIN="/tmp/openstick-ufi001c-modem.bin"
+          MODEM_MNT="/tmp/ufi001c-modem-mnt"
+
+          echo "=== Download UFI-001C modem.bin ==="
+          echo "Source: $MODEM_URL"
+          rm -f "$MODEM_BIN"
+          curl -fL --retry 3 --retry-delay 3 \
+            "$MODEM_URL" -o "$MODEM_BIN"
+
+          test -s "$MODEM_BIN" || {
+            echo "::error::UFI-001C modem.bin download is empty"
+            exit 1
+          }
+
+          echo "=== Firmware container ==="
+          file "$MODEM_BIN"
+          ls -lh "$MODEM_BIN"
+          sha256sum "$MODEM_BIN"
+
+          # OpenStick's UFI-001C procedure extracts modem firmware from
+          # modem.bin/image/{m*,wc*} into /lib/firmware. It does not flash
+          # modemst/fsc/fsg/sec or otherwise replace device-specific NV.
+          # See: https://gist.github.com/kinsamanka/0b01cd02412bd13ee072072043d46fa2
+          rm -rf "$MODEM_MNT"
+          mkdir -p "$MODEM_MNT"
+
+          cleanup() {
+            sudo umount "$MODEM_MNT" 2>/dev/null || true
+            rm -rf "$MODEM_MNT"
+          }
+          trap cleanup EXIT
+
+          echo "=== Mount modem.bin read-only ==="
+          sudo mount -o loop,ro "$MODEM_BIN" "$MODEM_MNT"
+
+          test -d "$MODEM_MNT/image" || {
+            echo "::error::modem.bin does not contain the expected /image directory"
+            echo "=== modem.bin root ==="
+            sudo find "$MODEM_MNT" -maxdepth 2 -type f -printf '%p\n' | head -100
+            exit 1
+          }
+
+          echo "=== UFI-001C modem image files ==="
+          sudo find "$MODEM_MNT/image" -maxdepth 1 -type f \
+            \( -name 'm*' -o -name 'wc*' \) -printf '%f\n' | sort
+
+          mkdir -p files/lib/firmware
+
+          # Copy only firmware payloads. Device-specific modemst/fsc/fsg/NV
+          # partitions are NOT touched by this workflow.
+          sudo cp -av "$MODEM_MNT"/image/m* "$MODEM_MNT"/image/wc* files/lib/firmware/ 2>/dev/null || true
+
+          echo "=== Validate injected modem firmware ==="
+          test -s files/lib/firmware/modem.mdt || {
+            echo "::error::modem.mdt was not extracted from UFI-001C modem.bin"
+            exit 1
+          }
+
+          test -s files/lib/firmware/mba.mbn || {
+            echo "::error::mba.mbn was not extracted from UFI-001C modem.bin"
+            exit 1
+          }
+
+          echo "=== Injected firmware hashes ==="
+          sha256sum files/lib/firmware/mba.mbn files/lib/firmware/modem.mdt \
+            files/lib/firmware/modem.b* 2>/dev/null | sort
+
+          echo "=== Firmware overlay ready ==="
+          find files/lib/firmware -maxdepth 1 -type f \
+            \( -name 'mba.mbn' -o -name 'modem.*' -o -name 'wc*' \) \
+            -printf '%f\n' | sort
+          trap - EXIT
+          cleanup
 
       - name: Download sources
         working-directory: ${{ github.workspace }}/openwrt
