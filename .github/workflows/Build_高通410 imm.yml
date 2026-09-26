@@ -1,10 +1,10 @@
-name: "🚀 Build ImmortalWrt UFI-001C (FINAL)"
+name: "Build ImmortalWrt UFI-001C FULL"
 
 on:
   workflow_dispatch:
     inputs:
       custom_hash:
-        description: "Optional upstream commit hash"
+        description: "Optional ImmortalWrt commit hash (blank = latest master)"
         required: false
         default: ""
         type: string
@@ -12,11 +12,6 @@ on:
         description: "Extra packages, separated by spaces or commas"
         required: false
         default: ""
-        type: string
-      ufi_modem_url:
-        description: "UFI-001C modem.bin source"
-        required: false
-        default: "https://github.com/HandsomeMod/qcom-firmware/raw/refs/heads/main/openstick-ufi001c-modem.bin"
         type: string
 
 env:
@@ -32,8 +27,7 @@ jobs:
       actions: write
 
     steps:
-
-      - name: Checkout build repository
+      - name: Checkout builder repository
         uses: actions/checkout@v4
 
       - name: Free disk space
@@ -53,70 +47,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            clang \
-            flex \
-            bison \
-            g++ \
-            gawk \
-            gcc-multilib \
-            gettext \
-            git \
-            libncurses5-dev \
-            libssl-dev \
-            python3-distutils \
-            rsync \
-            unzip \
-            zlib1g-dev \
-            file \
-            wget \
-            curl \
-            jq \
-            ninja-build \
-            zip \
-            p7zip-full \
-            gettext-base \
-            xsltproc \
-            swig \
-            time \
-            libelf-dev \
-            libdw-dev \
-            android-sdk-libsparse-utils
+            build-essential clang flex bison g++ gawk gcc-multilib \
+            gettext git libncurses5-dev libssl-dev python3-distutils \
+            rsync unzip zlib1g-dev file wget curl jq ninja-build \
+            p7zip-full gettext-base xsltproc swig time libelf-dev \
+            libdw-dev android-sdk-libsparse-utils
 
           sudo timedatectl set-timezone "$TZ"
-
-      - name: Install mkbootimg
-        run: |
-          wget -q https://github.com/xuxin1955/depend_ubuntu2204_openwrt/releases/download/ubuntu_26.04_LTS_mkbootimg/mkbootimg_34.0.5-12build1_all.deb
-          sudo dpkg -i mkbootimg_34.0.5-12build1_all.deb || true
-          sudo apt-get install -f -y
-          command -v mkbootimg || true
-
-          echo "=== Verify Android sparse image tool ==="
-          command -v img2simg || {
-            echo "::error::img2simg is missing; android-sdk-libsparse-utils was not installed"
-            dpkg -L android-sdk-libsparse-utils 2>/dev/null || true
-            exit 1
-          }
-          img2simg --help >/dev/null 2>&1 || true
-          echo "img2simg: $(command -v img2simg)"
 
       - name: Clone ImmortalWrt
         working-directory: ${{ github.workspace }}
         run: |
-          echo "Workspace: $GITHUB_WORKSPACE"
-          test -w "$GITHUB_WORKSPACE" || {
-            echo "::error::GitHub workspace is not writable"
-            ls -ld "$GITHUB_WORKSPACE"
-            exit 1
-          }
-
-          rm -rf "$GITHUB_WORKSPACE/openwrt"
-
-          git clone --depth=1 \
-            -b "$REPO_BRANCH" \
-            "$REPO_URL" \
-            "$GITHUB_WORKSPACE/openwrt"
+          rm -rf openwrt
+          git clone --depth=1 -b "$REPO_BRANCH" "$REPO_URL" openwrt
 
           if [ -n "${{ inputs.custom_hash }}" ]; then
             cd openwrt
@@ -124,33 +67,8 @@ jobs:
             git checkout "${{ inputs.custom_hash }}"
           fi
 
-          test -d "$GITHUB_WORKSPACE/openwrt/.git" || {
-            echo "::error::ImmortalWrt clone did not create a git work tree"
-            exit 1
-          }
-
-          test -w "$GITHUB_WORKSPACE/openwrt" || {
-            echo "::error::Cloned ImmortalWrt directory is not writable"
-            ls -ld "$GITHUB_WORKSPACE/openwrt"
-            exit 1
-          }
-
-
-      - name: Apply repository custom files and feeds
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          # Keep compatibility with the original build repository layout.
-          if [ -d "$GITHUB_WORKSPACE/files" ]; then
-            rm -rf files
-            cp -a "$GITHUB_WORKSPACE/files" ./files
-          fi
-
-          # Use the selected ImmortalWrt source's own feeds.conf.default.
-          # Do NOT import the old build repository feeds here: its optional
-          # small-package feed introduces OpenAppFilter/kmod-oaf and can make
-          # current Kconfig fail with a recursive dependency before defconfig.
-          echo "=== Using upstream ImmortalWrt feeds.conf.default ==="
-          grep -E '^src-(git|hg|svn|bzr|link)' feeds.conf.default || true
+          echo "=== Source ==="
+          git -C openwrt log -1 --oneline
 
       - name: Update feeds
         working-directory: ${{ github.workspace }}/openwrt
@@ -158,514 +76,26 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
 
-          echo "=== Check for unwanted OpenAppFilter/OAF package definitions ==="
-          if grep -RIl --include='Makefile' 'KernelPackage/oaf\|kmod-oaf' package/feeds 2>/dev/null | head -20 | grep -q .; then
-            echo "::warning::OAF package definition found in installed feeds; removing its package directories"
-            grep -RIl --include='Makefile' 'KernelPackage/oaf\|kmod-oaf' package/feeds 2>/dev/null | while read -r f; do
-              d=$(dirname "$f")
-              echo "Removing OAF package directory: $d"
-              rm -rf "$d"
-            done
-          fi
-
-      - name: Load UFI-001C configuration
+      - name: Load UFI-001C target configuration
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          if [ -f "$GITHUB_WORKSPACE/config/ufi001c.config" ]; then
-            cp "$GITHUB_WORKSPACE/config/ufi001c.config" .config
-          else
+          test -f "$GITHUB_WORKSPACE/config/ufi001c.config" || {
             echo "::error::config/ufi001c.config not found"
             exit 1
-          fi
+          }
 
+          cp "$GITHUB_WORKSPACE/config/ufi001c.config" .config
+
+          echo "=== UFI-001C target from config ==="
           grep -E \
-            '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c|^CONFIG_DEFAULT_qcom-msm8916-modem-openstick-ufi001c-firmware|^CONFIG_DEFAULT_qcom-msm8916-openstick-ufi001c-wcnss-firmware|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv' \
+            '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c' \
             .config || true
 
-          # Do not execute the old diy-part2.sh here. It was written for the
-          # multi-device legacy workflow (including UFI103S) and can inject
-          # unrelated packages into the UFI-001C configuration. All UFI-001C
-          # custom packages are generated explicitly below.
-
-
-      - name: Prepare UFI-001C package build system
+      - name: Force UFI-001C FULL modem stack
         working-directory: ${{ github.workspace }}/openwrt
-        env:
-          TERM: xterm
         run: |
           set -e
-          export TERM=xterm
 
-          echo "=== Verify UFI-001C target configuration ==="
-          grep -E '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$|^CONFIG_TARGET_PROFILE="DEVICE_openstick-ufi001c"$' .config || {
-            echo "::error::UFI-001C target is missing from .config"
-            exit 1
-          }
-
-          echo "=== Use APK package manager ==="
-          sed -i '/^CONFIG_USE_APK=/d' .config
-          sed -i '/^# CONFIG_USE_APK is not set$/d' .config
-          sed -i '/^CONFIG_PACKAGE_opkg=/d' .config
-          echo 'CONFIG_USE_APK=y' >> .config
-
-          echo "=== Remove stale/legacy package definitions ==="
-          rm -rf package/OpenAppFilter package/new/luci-app-oaf \
-            package/feeds/*/OpenAppFilter package/feeds/*/luci-app-oaf \
-            package/feeds/*/oaf feeds/smpackage 2>/dev/null || true
-
-          echo "=== Defconfig ==="
-          make defconfig
-
-          grep -q '^CONFIG_USE_APK=y$' .config || {
-            echo "::error::CONFIG_USE_APK=y was not retained by defconfig"
-            exit 1
-          }
-
-          echo "=== Verify APK host build definition ==="
-          test -f package/system/apk/Makefile || {
-            echo "::error::package/system/apk/Makefile is missing"
-            exit 1
-          }
-
-          grep -q '^HOST_BUILD_DEPENDS:=lua/host' package/system/apk/Makefile || {
-            echo "::error::Unexpected APK Makefile: lua/host dependency is missing"
-            sed -n '1,110p' package/system/apk/Makefile
-            exit 1
-          }
-
-          grep -q '$(eval $(call HostBuild))' package/system/apk/Makefile || {
-            echo "::error::Unexpected APK Makefile: HostBuild is missing"
-            tail -n 30 package/system/apk/Makefile
-            exit 1
-          }
-
-          echo "=== Clean ONLY APK host state ==="
-          rm -rf build_dir/hostpkg/apk-* \
-                 staging_dir/host/stamp/.apk_installed \
-                 staging_dir/host/stamp/.apk_* \
-                 staging_dir/host/bin/apk
-
-          echo "=== Build and install the complete OpenWrt host toolset ==="
-          # Do not build individual host tools one-by-one. The previous runs
-          # exposed missing host tools (libdeflate-gzip, then sed) because the
-          # APK target was invoked before the normal OpenWrt tools stage.
-          # OpenWrt's standard tools/install target builds and installs the
-          # complete host toolset in the correct dependency order.
-          make tools/install V=s -j2 2>&1 | tee /tmp/openwrt-tools-install.log
-
-          echo "=== Verify required host tools ==="
-          for tool in sed libdeflate-gzip; do
-            test -x "staging_dir/host/bin/$tool" || {
-              echo "::error::$tool was not installed in staging_dir/host/bin"
-              find staging_dir/host/bin -maxdepth 1 -type f \
-                \( -name 'sed' -o -name 'libdeflate*' \) -print 2>/dev/null || true
-              exit 1
-            }
-            echo "Found: staging_dir/host/bin/$tool"
-          done
-
-          echo "=== Let OpenWrt resolve ALL APK host dependencies ==="
-          # APK declares lua/host itself. Do not call a guessed Lua package path
-          # or manually run Meson/Ninja; OpenWrt resolves the dependency chain.
-          make package/system/apk/host/compile V=s -j1 2>&1 | tee /tmp/apk-host-compile.log
-
-          test -x staging_dir/host/bin/apk || {
-            echo "::error::APK host binary was not installed"
-            echo "=== APK host directory state ==="
-            find build_dir/hostpkg -maxdepth 3 -type d -name 'openwrt-build' -print 2>/dev/null || true
-            echo "=== APK files ==="
-            find build_dir/hostpkg -maxdepth 4 -type f -name 'apk' -print 2>/dev/null || true
-            exit 1
-          }
-
-          echo "=== APK host tool ==="
-          staging_dir/host/bin/apk --version || true
-
-          echo "=== Verify Meson build tree ==="
-          APK_BUILD_DIR="$(find build_dir/hostpkg -maxdepth 2 -type d -path '*/apk-*/openwrt-build' | head -n 1 || true)"
-          if [ -n "$APK_BUILD_DIR" ]; then
-            test -f "$APK_BUILD_DIR/build.ninja" || {
-              echo "::error::APK openwrt-build exists but build.ninja is missing"
-              find "$APK_BUILD_DIR" -maxdepth 2 -type f | head -100 || true
-              exit 1
-            }
-            echo "APK Meson build directory: $APK_BUILD_DIR"
-          else
-            echo "::warning::APK Meson build directory was cleaned after successful install; continuing"
-          fi
-
-      - name: Upload APK host diagnostic log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: UFI001C-APK-host-diagnostic
-          path: |
-            /tmp/apk-host-compile.log
-            /tmp/openwrt-tools-install.log
-          if-no-files-found: warn
-
-      - name: Add HomeProxy
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          rm -rf package/luci-app-homeproxy /tmp/homeproxy
-
-          for n in 1 2 3; do
-            rm -rf /tmp/homeproxy
-            if git clone --depth=1 \
-              https://github.com/immortalwrt/homeproxy.git \
-              /tmp/homeproxy; then
-              break
-            fi
-            echo "HomeProxy clone failed (attempt $n/3)"
-            sleep 5
-          done
-
-          test -f /tmp/homeproxy/Makefile || {
-            echo "::error::Unable to clone ImmortalWrt HomeProxy"
-            exit 1
-          }
-
-          cp -a /tmp/homeproxy package/luci-app-homeproxy
-          rm -rf /tmp/homeproxy
-
-          echo "HomeProxy package installed:"
-          test -f package/luci-app-homeproxy/Makefile
-          grep -n "PKG_NAME\|sing-box" package/luci-app-homeproxy/Makefile | head -30 || true
-
-      - name: Add UFI-001C control package
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-
-          rm -rf package/ufi001c-control
-
-          mkdir -p \
-            package/ufi001c-control/luasrc/controller \
-            package/ufi001c-control/luasrc/model/cbi \
-            package/ufi001c-control/root/etc/config \
-            package/ufi001c-control/root/usr/sbin
-
-          cat > package/ufi001c-control/Makefile <<'EOF'
-          include $(TOPDIR)/rules.mk
-
-          PKG_NAME:=ufi001c-control
-          PKG_RELEASE:=1
-
-          include $(INCLUDE_DIR)/package.mk
-
-          define Package/ufi001c-control
-            SECTION:=luci
-            CATEGORY:=LuCI
-            SUBMENU:=3. Applications
-            TITLE:=UFI-001C modem and proxy control
-            DEPENDS:=+luci-base +luci-compat +modemmanager +luci-proto-modemmanager +luci-app-homeproxy
-          endef
-
-          define Package/ufi001c-control/description
-           LuCI control panel for UFI-001C 3G/4G mode and HomeProxy
-          endef
-
-          define Build/Compile
-          endef
-
-          define Package/ufi001c-control/install
-          	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-          	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi
-          	$(INSTALL_DIR) $(1)/etc/config
-          	$(INSTALL_DIR) $(1)/usr/sbin
-
-          	$(CP) ./luasrc/controller/* $(1)/usr/lib/lua/luci/controller/
-          	$(CP) ./luasrc/model/cbi/* $(1)/usr/lib/lua/luci/model/cbi/
-          	$(CP) ./root/etc/config/* $(1)/etc/config/
-          	$(CP) ./root/usr/sbin/* $(1)/usr/sbin/
-
-          	chmod 0755 $(1)/usr/sbin/ufi001c-control
-          endef
-
-          $(eval $(call BuildPackage,ufi001c-control))
-          EOF
-
-          # Validate that install recipes contain real TAB indentation.
-          echo "=== Validate UFI-001C package Makefile ==="
-          grep -n $'^\t' package/ufi001c-control/Makefile || true
-
-          cat > package/ufi001c-control/root/etc/config/ufi001c <<'EOF'
-          config ufi001c 'main'
-            option mode '4g'
-            option proxy_enabled '0'
-            option subscription_url ''
-          EOF
-
-          cat > package/ufi001c-control/luasrc/controller/ufi001c.lua <<'EOF'
-          module("luci.controller.ufi001c", package.seeall)
-
-          function index()
-            entry(
-              {"admin", "network", "ufi001c"},
-              cbi("ufi001c"),
-              _("UFI-001C"),
-              20
-            ).dependent = false
-          end
-          EOF
-
-          cat > package/ufi001c-control/luasrc/model/cbi/ufi001c.lua <<'EOF'
-          local sys = require "luci.sys"
-
-          m = Map(
-            "ufi001c",
-            translate("UFI-001C"),
-            translate("3G/4G modem and HomeProxy control")
-          )
-
-          s = m:section(
-            NamedSection,
-            "main",
-            "ufi001c",
-            translate("UFI-001C Settings")
-          )
-
-          s.anonymous = true
-
-          mode = s:option(
-            ListValue,
-            "mode",
-            translate("Mobile network mode")
-          )
-
-          mode:value("3g", translate("3G only"))
-          mode:value("4g", translate("4G only"))
-          mode:value("3g|4g", translate("3G + 4G automatic"))
-          mode.default = "4g"
-
-          proxy = s:option(
-            Flag,
-            "proxy_enabled",
-            translate("HomeProxy")
-          )
-
-          proxy.rmempty = false
-          proxy.default = "0"
-          proxy.description = translate(
-            "Enable or disable HomeProxy"
-          )
-
-          sub = s:option(
-            Value,
-            "subscription_url",
-            translate("Subscription URL")
-          )
-
-          sub.password = true
-          sub.rmempty = true
-          sub.description = translate(
-            "Enter the subscription URL. The URL is stored locally on the router."
-          )
-
-          apply = s:option(
-            Button,
-            "_apply",
-            translate("Apply settings")
-          )
-
-          apply.inputstyle = "apply"
-
-          function apply.write()
-            sys.call(
-              "/usr/sbin/ufi001c-control apply >/tmp/ufi001c-control.log 2>&1"
-            )
-          end
-
-          status = s:option(
-            DummyValue,
-            "_status",
-            translate("Status")
-          )
-
-          function status.cfgvalue()
-            return sys.exec(
-              "/usr/sbin/ufi001c-control status 2>/dev/null"
-            )
-          end
-
-          return m
-          EOF
-
-          cat > package/ufi001c-control/root/usr/sbin/ufi001c-control <<'EOF'
-          #!/bin/sh
-
-          UCI="/sbin/uci"
-          LOGTAG="ufi001c-control"
-
-          log_msg() {
-              logger -t "$LOGTAG" "$1"
-          }
-
-          modem_id() {
-              mmcli -L 2>/dev/null |
-              sed -n 's#.*Modem/\([0-9][0-9]*\).*#\1#p' |
-              head -n 1
-          }
-
-          set_mode() {
-              MODE="$($UCI -q get ufi001c.main.mode)"
-              MODEM_ID="$(modem_id)"
-
-              [ -n "$MODEM_ID" ] || {
-                  log_msg "No ModemManager modem found"
-                  return 1
-              }
-
-              # Keep the combined mode pattern after the exact 3g/4g cases.
-              case "$MODE" in
-                  3g)
-                      ALLOWED="3g"
-                      ;;
-                  4g)
-                      ALLOWED="4g"
-                      ;;
-                  3g|4g)
-                      ALLOWED="3g|4g"
-                      ;;
-                  *)
-                      ALLOWED="4g"
-                      ;;
-              esac
-
-              log_msg "Setting modem $MODEM_ID allowed mode: $ALLOWED"
-
-              mmcli -m "$MODEM_ID" \
-                --set-allowed-modes="$ALLOWED" \
-                >/tmp/ufi001c-mmcli.log 2>&1
-
-              if $UCI -q get network.modem >/dev/null 2>&1; then
-                  $UCI set network.modem.allowedmode="$MODE"
-                  $UCI commit network
-              fi
-
-              return 0
-          }
-
-          configure_subscription() {
-              SUBURL="$($UCI -q get ufi001c.main.subscription_url)"
-
-              [ -n "$SUBURL" ] || return 0
-
-              log_msg "Configuring HomeProxy subscription"
-
-              if ! $UCI -q get homeproxy.subscription >/dev/null 2>&1; then
-                  $UCI set homeproxy.subscription=subscription
-              fi
-
-              $UCI set homeproxy.subscription.auto_update='1'
-              $UCI delete homeproxy.subscription.subscription_url 2>/dev/null || true
-              $UCI add_list homeproxy.subscription.subscription_url="$SUBURL"
-              $UCI commit homeproxy
-
-              if [ -x /etc/homeproxy/scripts/update_subscriptions.uc ]; then
-                  /etc/homeproxy/scripts/update_subscriptions.uc \
-                    >/tmp/ufi001c-subscription.log 2>&1 || true
-              fi
-          }
-
-          first_node() {
-              $UCI show homeproxy 2>/dev/null |
-                sed -n 's/^homeproxy\.\([^\.]*\)\.type=.*/\1/p' |
-                grep -v '^subscription$' |
-                head -n 1
-          }
-
-          select_first_node() {
-              CURRENT="$($UCI -q get homeproxy.config.main_node)"
-
-              if [ -n "$CURRENT" ] &&
-                 [ "$CURRENT" != "nil" ]; then
-                  return 0
-              fi
-
-              NODE="$(first_node)"
-
-              if [ -n "$NODE" ]; then
-                  log_msg "Selecting first HomeProxy node: $NODE"
-                  $UCI set homeproxy.config.main_node="$NODE"
-                  $UCI commit homeproxy
-              fi
-          }
-
-          set_proxy() {
-              ENABLED="$($UCI -q get ufi001c.main.proxy_enabled)"
-
-              if [ "$ENABLED" = "1" ]; then
-                  log_msg "Enabling HomeProxy"
-
-                  configure_subscription
-                  select_first_node
-
-                  /etc/init.d/homeproxy enable >/dev/null 2>&1 || true
-                  /etc/init.d/homeproxy restart >/tmp/ufi001c-homeproxy.log 2>&1 || true
-              else
-                  log_msg "Disabling HomeProxy"
-
-                  /etc/init.d/homeproxy stop >/dev/null 2>&1 || true
-                  /etc/init.d/homeproxy disable >/dev/null 2>&1 || true
-              fi
-          }
-
-          status() {
-              echo "=== UFI-001C ==="
-
-              echo "Mode: $($UCI -q get ufi001c.main.mode || echo unknown)"
-
-              echo "Proxy: $($UCI -q get ufi001c.main.proxy_enabled || echo 0)"
-
-              if mmcli -L >/dev/null 2>&1; then
-                  echo "ModemManager: detected"
-              else
-                  echo "ModemManager: not detected"
-              fi
-
-              if /etc/init.d/homeproxy status >/dev/null 2>&1; then
-                  echo "HomeProxy: running"
-              else
-                  echo "HomeProxy: stopped"
-              fi
-          }
-
-          apply_all() {
-              set_mode
-              configure_subscription
-              set_proxy
-          }
-
-          case "$1" in
-              mode)
-                  set_mode
-                  ;;
-              proxy)
-                  set_proxy
-                  ;;
-              subscription)
-                  configure_subscription
-                  ;;
-              status)
-                  status
-                  ;;
-              apply|"")
-                  apply_all
-                  ;;
-              *)
-                  echo "Usage: $0 {apply|mode|proxy|subscription|status}"
-                  exit 1
-                  ;;
-          esac
-
-          exit 0
-          EOF
-
-          chmod 0755 package/ufi001c-control/root/usr/sbin/ufi001c-control
-
-      - name: Enable UFI-001C packages
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
           enable_pkg() {
             PKG="$1"
             CFG="CONFIG_PACKAGE_${PKG}"
@@ -679,192 +109,164 @@ jobs:
             fi
           }
 
+          enable_default() {
+            PKG="$1"
+            CFG="CONFIG_DEFAULT_${PKG}"
+
+            if grep -q "^# ${CFG} is not set$" .config; then
+              sed -i "s/^# ${CFG} is not set$/${CFG}=y/" .config
+            elif grep -q "^${CFG}=" .config; then
+              sed -i "s/^${CFG}=.*$/${CFG}=y/" .config
+            else
+              echo "${CFG}=y" >> .config
+            fi
+          }
+
+          # HARD target lock: this workflow is ONLY for UFI-001C.
+          grep -q '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$' .config || {
+            echo "::error::UFI-001C target is not selected"
+            exit 1
+          }
+
+          # Qualcomm MSM8916 modem firmware and WLAN NV.
+          enable_pkg qcom-msm8916-modem-openstick-ufi001c-firmware
+          enable_pkg qcom-msm8916-openstick-ufi001c-wcnss-firmware
+          enable_pkg qcom-msm8916-wcnss-openstick-ufi001c-nv
+
+          enable_default qcom-msm8916-modem-openstick-ufi001c-firmware
+          enable_default qcom-msm8916-openstick-ufi001c-wcnss-firmware
+          enable_default qcom-msm8916-wcnss-openstick-ufi001c-nv
+
+          # WWAN / QMI / ModemManager stack.
           for pkg in \
+            modemmanager \
             luci-proto-modemmanager \
+            qmi-utils \
+            uqmi \
+            usb-modeswitch \
+            kmod-usb-net-qmi-wwan \
+            kmod-usb-serial-option \
+            kmod-usb-serial-wwan \
+            kmod-bam-dmux \
+            kmod-qcom-rproc-modem \
+            kmod-rpmsg-wwan-ctrl
+          do
+            enable_pkg "$pkg" || true
+          done
+
+          # LuCI / diagnostics.
+          for pkg in \
+            luci \
+            luci-compat \
+            luci-app-ttyd \
+            ttyd \
+            ca-bundle \
+            curl \
+            wget \
+            pciutils \
+            usbutils
+          do
+            enable_pkg "$pkg" || true
+          done
+
+          # Existing UFI-001C control package if present in this builder.
+          if [ -d "$GITHUB_WORKSPACE/package/ufi001c-control" ]; then
+            rm -rf package/ufi001c-control
+            cp -a "$GITHUB_WORKSPACE/package/ufi001c-control" package/ufi001c-control
+            enable_pkg ufi001c-control
+          fi
+
+          # HomeProxy / sing-box.
+          for pkg in \
             luci-app-homeproxy \
             luci-i18n-homeproxy-zh-cn \
             sing-box-tiny \
             kmod-tun \
             kmod-nft-tproxy \
-            kmod-nft-socket \
-            ufi001c-control
+            kmod-nft-socket
           do
-            enable_pkg "$pkg"
+            enable_pkg "$pkg" || true
           done
 
-          # HomeProxy depends on the virtual package sing-box. The OpenWrt
-          # sing-box-tiny variant provides that virtual package.
-          grep -q '^CONFIG_PACKAGE_sing-box-tiny=y$' .config || {
-            echo "::error::sing-box-tiny is missing from .config"
-            exit 1
-          }
-
-          # Keep the dedicated UFI-001C modem firmware from the device config.
-          enable_pkg qcom-msm8916-modem-openstick-ufi001c-firmware
-          enable_pkg qcom-msm8916-openstick-ufi001c-wcnss-firmware
-          enable_pkg qcom-msm8916-wcnss-openstick-ufi001c-nv
-
-          # Extra user packages.
+          # Extra packages from workflow input.
           RAW="${{ inputs.extra_packages }}"
           PACKAGES="$(echo "$RAW" | tr ',' ' ')"
 
           for pkg in $PACKAGES; do
             [ -n "$pkg" ] || continue
             case "$pkg" in
-              __ip__*|__hostname__*)
-                continue
-                ;;
+              __ip__*|__hostname__*) continue ;;
             esac
-            enable_pkg "$pkg"
+            enable_pkg "$pkg" || true
           done
 
-          echo "=== UFI-001C final requested packages ==="
+          echo "=== Requested UFI-001C modem packages ==="
           grep -E \
-            '^CONFIG_PACKAGE_(luci-proto-modemmanager|luci-app-homeproxy|luci-i18n-homeproxy-zh-cn|sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket|ufi001c-control)=' \
+            'qcom-msm8916-modem-openstick-ufi001c-firmware|qcom-msm8916-openstick-ufi001c-wcnss-firmware|qcom-msm8916-wcnss-openstick-ufi001c-nv|modemmanager|qmi-utils|uqmi|kmod-qcom-rproc-modem|kmod-rpmsg-wwan-ctrl' \
             .config || true
 
-          echo "=== UFI-001C firmware packages ==="
-          grep -E \
-            '^CONFIG_DEFAULT_qcom-msm8916-(modem-openstick-ufi001c-firmware|openstick-ufi001c-wcnss-firmware)|^CONFIG_DEFAULT_qcom-msm8916-wcnss-openstick-ufi001c-nv|^CONFIG_PACKAGE_qcom-msm8916-modem-openstick-ufi001c-firmware=' \
-            .config || true
-
-      - name: Validate generated package files
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          test -s package/ufi001c-control/Makefile
-          test -s package/ufi001c-control/root/usr/sbin/ufi001c-control
-          test -s package/ufi001c-control/luasrc/controller/ufi001c.lua
-          test -s package/ufi001c-control/luasrc/model/cbi/ufi001c.lua
-          sh -n package/ufi001c-control/root/usr/sbin/ufi001c-control
-          echo "Custom UFI-001C package validation: PASS"
-
-      - name: Defconfig and validate
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          make defconfig
-
-          echo "=== Target ==="
-          grep -E '^CONFIG_TARGET.*DEVICE.*=y' .config
-
-          echo "=== UFI-001C ==="
-          grep -E \
-            '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$|^CONFIG_TARGET_PROFILE="DEVICE_openstick-ufi001c"$' \
-            .config
-
-          grep -q '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$' .config || {
-            echo "::error::UFI-001C target is missing"
-            exit 1
-          }
-
-          grep -q '^CONFIG_PACKAGE_luci-app-homeproxy=y$' .config || {
-            echo "::error::luci-app-homeproxy is missing"
-            exit 1
-          }
-
-          # HomeProxy depends on the virtual package "sing-box".
-          # sing-box-tiny PROVIDES:=sing-box, so it satisfies that dependency
-          # while keeping the UFI-001C image smaller.
-          grep -q '^CONFIG_PACKAGE_sing-box-tiny=y$' .config || {
-            echo "::error::sing-box-tiny is missing"
-            exit 1
-          }
-
-          if grep -q '^CONFIG_PACKAGE_sing-box=y$' .config; then
-            echo "::warning::Full sing-box is also enabled; image will be larger."
-          fi
-
-          grep -q '^CONFIG_PACKAGE_ufi001c-control=y$' .config || {
-            echo "::error::ufi001c-control is missing"
-            exit 1
-          }
-
-          echo "=== Modem firmware configuration ==="
-          grep -E \
-            'qcom-msm8916-modem-openstick-ufi001c-firmware|qcom-msm8916-openstick-ufi001c-wcnss-firmware|qcom-msm8916-wcnss-openstick-ufi001c-nv' \
-            .config || true
-
-          echo "=== HomeProxy ==="
-          grep -E '^CONFIG_PACKAGE_(luci-app-homeproxy|sing-box-tiny|kmod-tun|kmod-nft-tproxy|kmod-nft-socket)=' .config || true
-
-      - name: Inject verified UFI-001C modem firmware
+      - name: Add exact UFI-001C modem firmware payload
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -e
 
-          MODEM_URL="${{ inputs.ufi_modem_url }}"
-          MODEM_BIN="/tmp/openstick-ufi001c-modem.bin"
-          MODEM_MNT="/tmp/ufi001c-modem-mnt"
-
-          echo "=== Download UFI-001C modem.bin ==="
-          echo "Source: $MODEM_URL"
-          rm -f "$MODEM_BIN"
-          curl -fL --retry 3 --retry-delay 3 \
-            "$MODEM_URL" -o "$MODEM_BIN"
-
-          test -s "$MODEM_BIN" || {
-            echo "::error::UFI-001C modem.bin download is empty"
-            exit 1
-          }
-
-          echo "=== Firmware container ==="
-          file "$MODEM_BIN"
-          ls -lh "$MODEM_BIN"
-          sha256sum "$MODEM_BIN"
-
-          # OpenStick's UFI-001C procedure extracts modem firmware from
-          # modem.bin/image/{m*,wc*} into /lib/firmware. It does not flash
-          # modemst/fsc/fsg/sec or otherwise replace device-specific NV.
-          # See: https://gist.github.com/kinsamanka/0b01cd02412bd13ee072072043d46fa2
-          rm -rf "$MODEM_MNT"
-          mkdir -p "$MODEM_MNT"
-
-          cleanup() {
-            sudo umount "$MODEM_MNT" 2>/dev/null || true
-            rm -rf "$MODEM_MNT"
-          }
-          trap cleanup EXIT
-
-          echo "=== Mount modem.bin read-only ==="
-          sudo mount -o loop,ro "$MODEM_BIN" "$MODEM_MNT"
-
-          test -d "$MODEM_MNT/image" || {
-            echo "::error::modem.bin does not contain the expected /image directory"
-            echo "=== modem.bin root ==="
-            sudo find "$MODEM_MNT" -maxdepth 2 -type f -printf '%p\n' | head -100
-            exit 1
-          }
-
-          echo "=== UFI-001C modem image files ==="
-          sudo find "$MODEM_MNT/image" -maxdepth 1 -type f \
-            \( -name 'm*' -o -name 'wc*' \) -printf '%f\n' | sort
-
           mkdir -p files/lib/firmware
+          rm -f files/lib/firmware/openstick-ufi001c-modem.bin
 
-          # Copy only firmware payloads. Device-specific modemst/fsc/fsg/NV
-          # partitions are NOT touched by this workflow.
-          sudo cp -av "$MODEM_MNT"/image/m* "$MODEM_MNT"/image/wc* files/lib/firmware/ 2>/dev/null || true
+          URL="https://github.com/HandsomeMod/qcom-firmware/raw/refs/heads/main/openstick-ufi001c-modem.bin"
 
-          echo "=== Validate injected modem firmware ==="
-          test -s files/lib/firmware/modem.mdt || {
-            echo "::error::modem.mdt was not extracted from UFI-001C modem.bin"
-            exit 1
-          }
+          echo "Downloading UFI-001C modem firmware:"
+          echo "$URL"
 
-          test -s files/lib/firmware/mba.mbn || {
-            echo "::error::mba.mbn was not extracted from UFI-001C modem.bin"
-            exit 1
-          }
+          curl -fL --retry 3 --retry-all-errors \
+            "$URL" \
+            -o files/lib/firmware/openstick-ufi001c-modem.bin
 
-          echo "=== Injected firmware hashes ==="
-          sha256sum files/lib/firmware/mba.mbn files/lib/firmware/modem.mdt \
-            files/lib/firmware/modem.b* 2>/dev/null | sort
+          test -s files/lib/firmware/openstick-ufi001c-modem.bin
 
-          echo "=== Firmware overlay ready ==="
-          find files/lib/firmware -maxdepth 1 -type f \
-            \( -name 'mba.mbn' -o -name 'modem.*' -o -name 'wc*' \) \
-            -printf '%f\n' | sort
-          trap - EXIT
-          cleanup
+          echo "=== Modem firmware SHA256 ==="
+          sha256sum files/lib/firmware/openstick-ufi001c-modem.bin
+
+          # Extract the modem firmware into the normal Linux firmware path.
+          mkdir -p /tmp/ufi001c-modem
+          mountpoint -q /tmp/ufi001c-modem || true
+
+          if command -v 7z >/dev/null 2>&1; then
+            7z x -y files/lib/firmware/openstick-ufi001c-modem.bin \
+              -o/tmp/ufi001c-modem >/tmp/ufi001c-7z.log || true
+          fi
+
+          if [ -d /tmp/ufi001c-modem/image ]; then
+            cp -av /tmp/ufi001c-modem/image/m* files/lib/firmware/ || true
+            cp -av /tmp/ufi001c-modem/image/wc* files/lib/firmware/ || true
+          fi
+
+          echo "=== UFI firmware files ==="
+          ls -lh files/lib/firmware | grep -E '^(.* )?(mba|modem|wcnss)' || true
+
+      - name: Validate target and configuration
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -e
+
+          make defconfig
+
+          grep -q '^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=y$' .config
+          grep -q '^CONFIG_TARGET_PROFILE="DEVICE_openstick-ufi001c"$' .config
+
+          echo "=== FINAL TARGET ==="
+          grep -E \
+            '^CONFIG_TARGET_msm89xx|^CONFIG_TARGET_PROFILE|^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-ufi001c=' \
+            .config
+
+          echo "=== FINAL MODEM CONFIG ==="
+          grep -E \
+            'qcom-msm8916-modem-openstick-ufi001c-firmware|qcom-msm8916-openstick-ufi001c-wcnss-firmware|qcom-msm8916-wcnss-openstick-ufi001c-nv|modemmanager|qmi-utils|uqmi|kmod-qcom-rproc-modem|kmod-rpmsg-wwan-ctrl' \
+            .config || true
+
+          echo "=== MODEM PAYLOAD ==="
+          test -s files/lib/firmware/openstick-ufi001c-modem.bin
+          ls -lh files/lib/firmware/openstick-ufi001c-modem.bin
 
       - name: Download sources
         working-directory: ${{ github.workspace }}/openwrt
@@ -873,163 +275,85 @@ jobs:
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
-      - name: Upload final config
-        uses: actions/upload-artifact@v4
-        with:
-          name: UFI001C-build-config
-          path: |
-            $GITHUB_WORKSPACE/openwrt/.config
-            $GITHUB_WORKSPACE/openwrt/feeds.conf.default
-          include-hidden-files: true
-
-      - name: Compile firmware
+      - name: Build firmware
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -o pipefail
 
           echo "=========================================="
-          echo "Compile UFI-001C firmware"
+          echo "BUILD UFI-001C FULL"
           echo "=========================================="
-          echo "CPU threads: $(nproc)"
-          echo "Memory:"
-          free -h
-          echo "Disk:"
-          df -h .
 
           rm -f compile.log compile-j1.log
 
-          echo "=== First build: parallel -j2 ==="
           set +e
           make -j2 V=s 2>&1 | tee compile.log
           RC=${PIPESTATUS[0]}
           set -e
 
           if [ "$RC" -ne 0 ]; then
-            echo "=========================================="
-            echo "Parallel build failed with exit code: $RC"
-            echo "Retrying with single job (-j1)"
-            echo "=========================================="
+            echo "Parallel build failed: $RC"
+            echo "Retrying with -j1"
 
             set +e
             make -j1 V=s 2>&1 | tee compile-j1.log
             RC2=${PIPESTATUS[0]}
             set -e
 
-            echo "=========================================="
-            echo "Single-job build exit code: $RC2"
-            echo "=========================================="
-
-            echo "=== Last 200 lines of single-job log ==="
-            tail -n 200 compile-j1.log || true
-
-            echo "=== Searching compiler errors ==="
-            grep -Ein \
-              '(^|[^[:alpha:]])(error:|fatal error:|undefined reference|No rule to make target|recipe for target|Error [0-9]+|make\[[0-9]+\]: \*\*\*)' \
-              compile-j1.log | tail -n 100 || true
-
+            tail -n 250 compile-j1.log || true
             exit "$RC2"
           fi
 
-          echo "=========================================="
-          echo "Parallel build completed successfully"
-          echo "=========================================="
-
-      - name: Upload compile logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: UFI001C-compile-logs
-          path: |
-            ${{ github.workspace }}/openwrt/compile.log
-            ${{ github.workspace }}/openwrt/compile-j1.log
-          if-no-files-found: ignore
-
-      - name: Collect firmware
+      - name: Verify generated UFI-001C images
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
-          cd "$GITHUB_WORKSPACE"/openwrt/bin/targets/*/*
+          set -e
 
-          echo "=== Firmware files ==="
-          find . -maxdepth 1 -type f -printf '%f\n' | sort
+          echo "=== Generated images ==="
+          find bin/targets/msm89xx/msm8916 -maxdepth 2 -type f \
+            \( -name '*ufi001c*' -o -name '*ext4-boot.img.gz' -o -name '*ext4-system.img.gz' \) \
+            -print | sort
 
-          mkdir -p release_files
+          echo "=== Firmware package manifest ==="
+          find bin/targets/msm89xx/msm8916 -type f \
+            -name '*manifest*' -o \
+            -name '*packages*' | sort || true
 
-          cp *.manifest release_files/ 2>/dev/null || true
-          cp *.buildinfo release_files/ 2>/dev/null || true
-          cp sha256sums release_files/ 2>/dev/null || true
+          test -d bin/targets/msm89xx/msm8916
 
-          find . \
-            -maxdepth 1 \
-            -type f \
-            \( -name '*sysupgrade*' -o -name '*factory*' -o -name '*boot.img*' -o -name '*system.img*' \) \
-            -exec cp {} release_files/ \;
+      - name: Prepare direct flash images
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -e
 
-          # Build a ready-to-flash package when the original repository provides
-          # its flashing scripts and the target emits boot/system images.
-          if [ -d "$GITHUB_WORKSPACE/刷机脚本" ]; then
-            BOOT_IMG=$(ls *boot.img.gz *boot.img 2>/dev/null | head -1 || true)
-            SYSTEM_IMG=$(ls *system.img.gz *system.img 2>/dev/null | head -1 || true)
-            if [ -n "$BOOT_IMG" ] && [ -n "$SYSTEM_IMG" ]; then
-              rm -rf flash_package
-              mkdir -p flash_package
+          mkdir -p "$GITHUB_WORKSPACE/flash-images"
 
-              case "$BOOT_IMG" in
-                *.gz) cp "$BOOT_IMG" flash_package/boot.img.gz; gzip -dk flash_package/boot.img.gz; rm -f flash_package/boot.img.gz ;;
-                *) cp "$BOOT_IMG" flash_package/boot.img ;;
-              esac
+          BOOT="$(find bin/targets/msm89xx/msm8916 -type f -name '*ufi001c*ext4-boot.img.gz' | head -n 1)"
+          ROOT="$(find bin/targets/msm89xx/msm8916 -type f -name '*ufi001c*ext4-system.img.gz' | head -n 1)"
 
-              case "$SYSTEM_IMG" in
-                *.gz) cp "$SYSTEM_IMG" flash_package/system.img.gz; gzip -dk flash_package/system.img.gz; rm -f flash_package/system.img.gz ;;
-                *) cp "$SYSTEM_IMG" flash_package/system.img ;;
-              esac
+          # Fallback to the standard msm8916 names if the device name is omitted.
+          [ -n "$BOOT" ] || BOOT="$(find bin/targets/msm89xx/msm8916 -type f -name '*ext4-boot.img.gz' | head -n 1)"
+          [ -n "$ROOT" ] || ROOT="$(find bin/targets/msm89xx/msm8916 -type f -name '*ext4-system.img.gz' | head -n 1)"
 
-              cp -a "$GITHUB_WORKSPACE/刷机脚本/." flash_package/
-              (cd flash_package && zip -qr ../OpenWrt_UFI001C_flash_package.zip .)
-              cp OpenWrt_UFI001C_flash_package.zip release_files/
-            fi
-          fi
+          test -n "$BOOT"
+          test -n "$ROOT"
 
-          test -n "$(find release_files -type f -print -quit)" || {
-            echo "::error::No firmware files collected"
-            exit 1
-          }
+          gzip -dc "$BOOT" > "$GITHUB_WORKSPACE/flash-images/boot.img"
+          gzip -dc "$ROOT" > "$GITHUB_WORKSPACE/flash-images/rootfs.img"
 
-      - name: Upload firmware artifact
+          sha256sum \
+            "$GITHUB_WORKSPACE/flash-images/boot.img" \
+            "$GITHUB_WORKSPACE/flash-images/rootfs.img"
+
+      - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-UFI001C
-          path: ${{ github.workspace }}/openwrt/bin/targets/*/*/release_files/*
-          if-no-files-found: error
-
-      - name: Create release
-        if: success()
-        uses: ncipollo/release-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: "ufi001c-${{ github.run_number }}"
-          name: "UFI-001C Build #${{ github.run_number }}"
-          body: |
-            ## UFI-001C
-
-            Target:
-            `openstick-ufi001c`
-
-            Included:
-            - Dedicated UFI-001C Qualcomm modem firmware package
-            - WCNSS firmware/NV for UFI-001C
-            - ModemManager LuCI protocol
-            - HomeProxy
-            - sing-box-tiny
-            - UFI-001C LuCI control page
-            - 3G / 4G / 3G+4G selection
-            - HomeProxy enable/disable
-            - Subscription URL configuration
-
-            The subscription URL is NOT embedded in this GitHub workflow.
-            Enter it locally from LuCI after flashing.
-
-          artifacts: ${{ github.workspace }}/openwrt/bin/targets/*/*/release_files/*
-          artifactErrorsFailBuild: false
-          allowUpdates: true
-          draft: false
-          prerelease: false
+          name: UFI001C-FULL-FIRMWARE
+          path: |
+            openwrt/bin/targets/msm89xx/msm8916/**
+            flash-images/boot.img
+            flash-images/rootfs.img
+            openwrt/compile.log
+            openwrt/compile-j1.log
+          if-no-files-found: warn
+          compression-level: 6
