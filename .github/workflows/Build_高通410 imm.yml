@@ -76,6 +76,66 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
 
+      - name: Fix Linux 6.18 netfilter package clash
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -e
+
+          NETFILTER="package/kernel/linux/modules/netfilter.mk"
+
+          test -f "$NETFILTER" || {
+            echo "::error::Cannot find $NETFILTER"
+            exit 1
+          }
+
+          echo "=== Before netfilter fix ==="
+          sed -n '45,85p' "$NETFILTER"
+
+          # Linux 6.18/OpenWrt SNAPSHOT currently has a packaging clash:
+          # kmod-iptables and kmod-nf-ipt both try to install
+          # ip_tables.ko and x_tables.ko.
+          #
+          # Keep kmod-iptables as the logical/hidden package, but let
+          # kmod-nf-ipt own the actual kernel modules.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("package/kernel/linux/modules/netfilter.mk")
+          s = p.read_text()
+
+          marker = "define KernelPackage/iptables"
+          start = s.find(marker)
+          if start < 0:
+              raise SystemExit("iptables package definition not found")
+
+          end = s.find("endef", start)
+          if end < 0:
+              raise SystemExit("iptables package end not found")
+
+          block = s[start:end]
+
+          pattern = re.compile(
+              r'FILES:=\s*\\\n'
+              r'\s*\$\(LINUX_DIR\)/net/ipv4/netfilter/ip_tables\.ko\s*\\\n'
+              r'\s*\$\(LINUX_DIR\)/net/netfilter/x_tables\.ko'
+          )
+
+          newblock, count = pattern.subn("FILES:=", block, count=1)
+          if count != 1:
+              raise SystemExit("Could not patch iptables FILES definition")
+
+          p.write_text(s[:start] + newblock + s[end:])
+          PY
+
+          echo "=== After netfilter fix ==="
+          sed -n '45,85p' "$NETFILTER"
+
+          grep -A18 -B2 '^define KernelPackage/iptables' "$NETFILTER" | grep -q 'FILES:=' || {
+            echo "::error::netfilter fix was not applied"
+            exit 1
+          }
+
       - name: Load UFI-001C target configuration
         working-directory: ${{ github.workspace }}/openwrt
         run: |
@@ -293,6 +353,9 @@ jobs:
 
           if [ "$RC" -ne 0 ]; then
             echo "Parallel build failed: $RC"
+            echo "=== Package/install errors from parallel log ==="
+            grep -Ein               'check_data_file_clashes|Cannot install package|No space left|No rule to make target|recipe for target|Error [0-9]+|make\[[0-9]+\]: \*\*\*|fatal error:|undefined reference'               compile.log | tail -n 150 || true
+
             echo "Retrying with -j1"
 
             set +e
@@ -300,7 +363,10 @@ jobs:
             RC2=${PIPESTATUS[0]}
             set -e
 
-            tail -n 250 compile-j1.log || true
+            echo "=== Final errors from single-job log ==="
+            grep -Ein               'check_data_file_clashes|Cannot install package|No space left|No rule to make target|recipe for target|Error [0-9]+|make\[[0-9]+\]: \*\*\*|fatal error:|undefined reference'               compile-j1.log | tail -n 200 || true
+
+            tail -n 100 compile-j1.log || true
             exit "$RC2"
           fi
 
