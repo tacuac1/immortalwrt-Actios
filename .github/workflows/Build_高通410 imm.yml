@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.0
+  FIRMWARE_VERSION: v3.1.1
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -236,8 +236,8 @@ jobs:
           grep -q '^CONFIG_PACKAGE_uhttpd-mod-ubus=y$' .config
           grep -q '^CONFIG_PACKAGE_android-tools-adbd=y$' .config
           grep -q '^CONFIG_PACKAGE_kmod-usb-gadget-fs=y$' .config
-          grep -q '^CONFIG_USB_FUNCTIONFS_ETH=n$' .config
-          grep -q '^CONFIG_USB_FUNCTIONFS_RNDIS=n$' .config
+          grep -Eq '^(CONFIG_USB_FUNCTIONFS_ETH=n|# CONFIG_USB_FUNCTIONFS_ETH is not set)$' .config
+          grep -Eq '^(CONFIG_USB_FUNCTIONFS_RNDIS=n|# CONFIG_USB_FUNCTIONFS_RNDIS is not set)$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y$' .config
           grep -q '^CONFIG_PACKAGE_xray-core=y$' .config
