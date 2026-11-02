@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.6
+  FIRMWARE_VERSION: v3.1.8
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -156,7 +156,7 @@ jobs:
           sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
           test -f "$ADB_MAKEFILE"
 
-      - name: Force pure FunctionFS kernel options for ADB
+      - name: Configure FunctionFS ADB plus RNDIS kernel modules
         working-directory: openwrt
         shell: bash
         run: |
@@ -179,7 +179,7 @@ jobs:
               print "\tCONFIG_USB_CONFIGFS_NCM=n \134";
               print "\tCONFIG_USB_CONFIGFS_ECM=n \134";
               print "\tCONFIG_USB_CONFIGFS_ECM_SUBSET=n \134";
-              print "\tCONFIG_USB_CONFIGFS_RNDIS=n \134";
+              print "\tCONFIG_USB_CONFIGFS_RNDIS=y \134";
               print "\tCONFIG_USB_CONFIGFS_EEM=n \134";
               print "\tCONFIG_USB_ETH=n \134";
               print "\tCONFIG_USB_ETH_RNDIS=n \134";
@@ -189,8 +189,15 @@ jobs:
               replaced=1
               next
             }
+            in_block && /^[[:space:]]+FILES[[:space:]]*:=/ {
+              print
+              print "\t$(LINUX_DIR)/drivers/usb/gadget/function/u_ether.ko \134"
+              print "\t$(LINUX_DIR)/drivers/usb/gadget/function/usb_f_rndis.ko \134"
+              files_added=1
+              next
+            }
             { print }
-            END { if (!replaced) exit 1 }
+            END { if (!replaced || !files_added) exit 1 }
           ' "$USB_MODULES_MK" > "$USB_MODULES_MK.tmp"
           mv "$USB_MODULES_MK.tmp" "$USB_MODULES_MK"
 
@@ -198,11 +205,13 @@ jobs:
             /^define KernelPackage\/usb-gadget-fs$/ { in_block=1 }
             in_block && /^endef$/ { in_block=0 }
             in_block && /CONFIG_USB_FUNCTIONFS_ETH=n/ { eth=1 }
-            in_block && /CONFIG_USB_CONFIGFS_RNDIS=n/ { configfs_rndis=1 }
+            in_block && /CONFIG_USB_CONFIGFS_RNDIS=y/ { configfs_rndis=1 }
             in_block && /CONFIG_USB_CONFIGFS_ECM=n/ { ecm=1 }
             in_block && /CONFIG_USB_CONFIGFS_NCM=n/ { ncm=1 }
             in_block && /CONFIG_USB_CONFIGFS_EEM=n/ { eem=1 }
-            END { exit !(eth && configfs_rndis && ecm && ncm && eem) }
+            in_block && /drivers\/usb\/gadget\/function\/u_ether\.ko/ { uether=1 }
+            in_block && /drivers\/usb\/gadget\/function\/usb_f_rndis\.ko/ { rndis=1 }
+            END { exit !(eth && configfs_rndis && ecm && ncm && eem && uether && rndis) }
           ' "$USB_MODULES_MK"
 
       - name: Add PassWall and Xray feeds
@@ -226,7 +235,7 @@ jobs:
           cp -a "$PASSWALL_LUCI_DIR" package/passwall/luci-app-passwall
           cp -a "$XRAY_DIR" package/passwall/xray-core
 
-      - name: Configure UFI-001C, LuCI and USB ADB
+      - name: Configure UFI-001C, LuCI, USB ADB and RNDIS
         working-directory: openwrt
         shell: bash
         run: |
@@ -262,7 +271,7 @@ jobs:
           CONFIG_PACKAGE_firewall4=y
           CONFIG_PACKAGE_nftables=y
 
-          # ADB over the device USB port.
+          # ADB + RNDIS over the device USB port.
           CONFIG_PACKAGE_android-tools-adbd=y
           CONFIG_PACKAGE_kmod-usb-gadget=y
           CONFIG_PACKAGE_kmod-usb-lib-composite=y
@@ -306,8 +315,8 @@ jobs:
 
           mkdir -p files/etc/uci-defaults files/etc/init.d
 
-          # Replace the feed init script with a small configfs gadget that
-          # exposes only FunctionFS ADB on the UFI-001C USB device port.
+          # Replace the feed init script with a configfs composite gadget that
+          # exposes FunctionFS ADB and an RNDIS network on the USB device port.
           cat > files/etc/init.d/adbd <<'EOF'
           #!/bin/sh /etc/rc.common
           START=80
@@ -316,9 +325,11 @@ jobs:
 
           GADGET=/sys/kernel/config/usb_gadget/ufi001c
           FFS=/dev/usb-ffs/adb
+          RNDIS_FUNCTION=$GADGET/functions/rndis.usb0
 
           start_service() {
               modprobe usb_f_fs 2>/dev/null || true
+              modprobe usb_f_rndis 2>/dev/null || true
               modprobe libcomposite 2>/dev/null || true
               mkdir -p /sys/kernel/config /dev/usb-ffs/adb
               mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config
@@ -336,21 +347,25 @@ jobs:
               done
               [ -e "$FFS/ep0" ] || return 0
 
-              mkdir -p "$GADGET/strings/0x409" "$GADGET/configs/c.1/strings/0x409" "$GADGET/functions/ffs.adb"
+              mkdir -p "$GADGET/strings/0x409" "$GADGET/configs/c.1/strings/0x409" "$GADGET/functions/ffs.adb" "$RNDIS_FUNCTION"
               echo 0x18d1 > "$GADGET/idVendor"
               echo 0x4ee7 > "$GADGET/idProduct"
               echo UFI001C > "$GADGET/strings/0x409/serialnumber"
               echo UFI-001C > "$GADGET/strings/0x409/manufacturer"
-              echo 'ImmortalWrt UFI-001C ADB' > "$GADGET/strings/0x409/product"
+              echo 'ImmortalWrt UFI-001C ADB+RNDIS' > "$GADGET/strings/0x409/product"
               echo 0x80 > "$GADGET/configs/c.1/bmAttributes"
               echo 500 > "$GADGET/configs/c.1/MaxPower"
+              echo 02:00:00:01:00:1c > "$RNDIS_FUNCTION/dev_addr"
+              echo 02:00:00:01:00:1d > "$RNDIS_FUNCTION/host_addr"
               ln -sf "$GADGET/functions/ffs.adb" "$GADGET/configs/c.1/ffs.adb"
+              ln -sf "$RNDIS_FUNCTION" "$GADGET/configs/c.1/rndis.usb0"
 
               for udc in /sys/class/udc/*; do
                   [ -e "$udc" ] || continue
                   echo "$(basename "$udc")" > "$GADGET/UDC"
                   break
               done
+              ifup lan 2>/dev/null || true
           }
 
           stop_service() {
@@ -368,6 +383,20 @@ jobs:
           uci set network.lan.proto='static'
           uci set network.lan.ipaddr='192.168.100.1'
           uci set network.lan.netmask='255.255.255.0'
+
+          # Put the USB RNDIS interface into the existing LAN bridge so Wi-Fi,
+          # Ethernet and USB all use the same LuCI address: 192.168.100.1.
+          LAN_DEVICE=$(uci -q get network.lan.device || echo br-lan)
+          LAN_DEVICE_SECTION=$(uci -q show network | sed -n "s/^\(network\.[^=]*\)\.name='$LAN_DEVICE'$/\1/p" | head -n 1)
+          if [ -n "$LAN_DEVICE_SECTION" ]; then
+            uci add_list "$LAN_DEVICE_SECTION.ports=usb0"
+          else
+            uci set network.br_lan='device'
+            uci set network.br_lan.name='br-lan'
+            uci set network.br_lan.type='bridge'
+            uci add_list network.br_lan.ports='usb0'
+            uci set network.lan.device='br-lan'
+          fi
 
           if [ ! -s /etc/config/wireless ]; then
             wifi config 2>/dev/null || true
@@ -412,12 +441,14 @@ jobs:
 
           cat > files/README-LUCI.txt <<EOF
           ImmortalWrt UFI-001C ${FIRMWARE_VERSION}
-          Image: LuCI web interface, Wi-Fi AP, USB ADB and PassWall/Xray.
+          Image: LuCI web interface, Wi-Fi AP, USB ADB + RNDIS and PassWall/Xray.
           LuCI address: http://192.168.100.1
+          USB RNDIS address: http://192.168.100.1 (same LAN bridge/DHCP)
           Wi-Fi SSID: ${WIFI_SSID}
           Wi-Fi security: open (no password)
           Default root/LuCI password: ${ROOT_PASSWORD}
           USB ADB: enabled by android-tools-adbd and FunctionFS
+          USB RNDIS: enabled as a composite USB gadget with ADB
           VMess server: configure an inbound in LuCI -> Services -> PassWall.
           EOF
 
