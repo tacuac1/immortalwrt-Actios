@@ -14,9 +14,9 @@ on:
         default: "UFI-001C-Router"
         type: string
       wifi_password:
-        description: "Wi-Fi password; 8-63 ASCII characters"
+        description: "Wi-Fi password; leave blank for an open network"
         required: false
-        default: "ChangeMe1234"
+        default: ""
         type: string
       root_password:
         description: "LuCI root password; 8-63 safe ASCII characters"
@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.0.8
+  FIRMWARE_VERSION: v3.1.0
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -168,8 +168,8 @@ jobs:
             echo "::error::wifi_ssid must contain 1-32 safe ASCII characters"
             exit 1
           }
-          [[ "$WIFI_PASSWORD" =~ ^[A-Za-z0-9._@#%+\-]{8,63}$ ]] || {
-            echo "::error::wifi_password must contain 8-63 safe ASCII characters"
+          [[ -z "$WIFI_PASSWORD" || "$WIFI_PASSWORD" =~ ^[A-Za-z0-9._@#%+\-]{8,63}$ ]] || {
+            echo "::error::wifi_password must be blank or contain 8-63 safe ASCII characters"
             exit 1
           }
           [[ "$ROOT_PASSWORD" =~ ^[A-Za-z0-9._@#%+\-]{8,63}$ ]] || {
@@ -202,7 +202,6 @@ jobs:
           CONFIG_PACKAGE_kmod-fs-configfs=y
           # ADB uses FunctionFS only; disable Ethernet/RNDIS variants that
           # require u_ether.ko and break kmod-usb-gadget-fs packaging.
-          CONFIG_USB_FUNCTIONFS_GENERIC=y
           CONFIG_USB_FUNCTIONFS_ETH=n
           CONFIG_USB_FUNCTIONFS_RNDIS=n
 
@@ -237,7 +236,6 @@ jobs:
           grep -q '^CONFIG_PACKAGE_uhttpd-mod-ubus=y$' .config
           grep -q '^CONFIG_PACKAGE_android-tools-adbd=y$' .config
           grep -q '^CONFIG_PACKAGE_kmod-usb-gadget-fs=y$' .config
-          grep -q '^CONFIG_USB_FUNCTIONFS_GENERIC=y$' .config
           grep -q '^CONFIG_USB_FUNCTIONFS_ETH=n$' .config
           grep -q '^CONFIG_USB_FUNCTIONFS_RNDIS=n$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config
@@ -306,7 +304,7 @@ jobs:
 
           uci set system.@system[0].hostname='UFI-001C'
           uci set network.lan.proto='static'
-          uci set network.lan.ipaddr='192.168.50.1'
+          uci set network.lan.ipaddr='192.168.100.1'
           uci set network.lan.netmask='255.255.255.0'
 
           if [ ! -s /etc/config/wireless ]; then
@@ -323,8 +321,13 @@ jobs:
           uci set "$AP_SECTION.mode=ap"
           uci set "$AP_SECTION.network=lan"
           uci set "$AP_SECTION.ssid=__WIFI_SSID__"
-          uci set "$AP_SECTION.encryption=psk2"
-          uci set "$AP_SECTION.key=__WIFI_PASSWORD__"
+          if [ -n "__WIFI_PASSWORD__" ]; then
+            uci set "$AP_SECTION.encryption=psk2"
+            uci set "$AP_SECTION.key=__WIFI_PASSWORD__"
+          else
+            uci set "$AP_SECTION.encryption=none"
+            uci -q delete "$AP_SECTION.key" || true
+          fi
           uci set "$AP_SECTION.disabled=0"
           uci set wireless.radio0.disabled='0' 2>/dev/null || true
 
@@ -348,8 +351,9 @@ jobs:
           cat > files/README-LUCI.txt <<EOF
           ImmortalWrt UFI-001C ${FIRMWARE_VERSION}
           Image: LuCI web interface, Wi-Fi AP, USB ADB and PassWall/Xray.
-          LuCI address: http://192.168.50.1
+          LuCI address: http://192.168.100.1
           Wi-Fi SSID: ${WIFI_SSID}
+          Wi-Fi security: open (no password)
           Default root/LuCI password: ${ROOT_PASSWORD}
           USB ADB: enabled by android-tools-adbd and FunctionFS
           VMess server: configure an inbound in LuCI -> Services -> PassWall.
