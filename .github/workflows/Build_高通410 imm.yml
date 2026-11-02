@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.9
+  FIRMWARE_VERSION: v3.1.10
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -506,17 +506,18 @@ jobs:
         run: |
           set -Eeuo pipefail
           TARGET_DIR="bin/targets/msm89xx/msm8916"
-          SYSTEM_IMAGE="$(find "$TARGET_DIR" -maxdepth 1 -type f -name '*-system.img' -print -quit)"
+          SYSTEM_ARCHIVE="$(find "$TARGET_DIR" -maxdepth 1 -type f -name '*-ext4-system.img.gz' -print -quit)"
+          [[ -n "$SYSTEM_ARCHIVE" ]] || { echo "ext4 system image archive not found" >&2; find "$TARGET_DIR" -maxdepth 1 -type f -printf '%f\n'; exit 1; }
+          SPARSE_IMAGE="$RUNNER_TEMP/ufi001c-system.sparse.img"
           RAW_IMAGE="$RUNNER_TEMP/ufi001c-system.raw.img"
-          if ! simg2img "$SYSTEM_IMAGE" "$RAW_IMAGE" 2>/dev/null; then
-            cp "$SYSTEM_IMAGE" "$RAW_IMAGE"
-          fi
+          gzip -cd "$SYSTEM_ARCHIVE" > "$SPARSE_IMAGE"
+          simg2img "$SPARSE_IMAGE" "$RAW_IMAGE"
 
-          debugfs -R 'stat /etc/init.d/adbd' "$RAW_IMAGE" >/dev/null
-          debugfs -R 'stat /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin' "$RAW_IMAGE" >/dev/null
+          debugfs -R 'stat /etc/init.d/adbd' "$RAW_IMAGE" 2>&1 | grep -q 'Inode:'
+          debugfs -R 'stat /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin' "$RAW_IMAGE" 2>&1 | grep -q 'Inode:'
           FIRMWARE_LIST="$(debugfs -R 'find /lib/firmware' "$RAW_IMAGE" 2>&1)"
           printf '%s\n' "$FIRMWARE_LIST"
-          printf '%s\n' "$FIRMWARE_LIST" | grep -Eiq '/(wcnss|WCNSS_qcom_wlan)\.mdt'
+          printf '%s\n' "$FIRMWARE_LIST" | grep -Eiq '(wcnss|WCNSS_qcom_wlan).*\.mdt'
 
           MODULE_LIST="$(debugfs -R 'find /lib/modules' "$RAW_IMAGE" 2>&1)"
           printf '%s\n' "$MODULE_LIST" | grep -Eq 'usb_f_rndis\.ko'
