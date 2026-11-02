@@ -122,12 +122,20 @@ jobs:
           grep -q '^src-git handsomefeed ' feeds.conf.default || \
             printf '%s\n' 'src-git handsomefeed https://github.com/HandsomeMod/handsomefeed.git' >> feeds.conf.default
           ./scripts/feeds update handsomefeed
-          ./scripts/feeds install -p handsomefeed android-tools-adbd
-          ADB_MAKEFILE="package/feeds/handsomefeed/android-tools/Makefile"
-          test -f "$ADB_MAKEFILE"
+          # Do not install the whole legacy feed: its graphics packages
+          # (kmscube/weston) are incompatible with the current source tree.
+          ADB_SOURCE_MAKEFILE="$(find -L feeds/handsomefeed -type f -name Makefile -print0 \
+            | xargs -0 grep -l '^PKG_NAME:=android-tools$' \
+            | head -n 1)"
+          test -n "$ADB_SOURCE_MAKEFILE"
+          rm -rf package/utils/android-tools
+          mkdir -p package/utils
+          cp -a "$(dirname "$ADB_SOURCE_MAKEFILE")" package/utils/android-tools
+          ADB_MAKEFILE=package/utils/android-tools/Makefile
           # The feed uses the old package name; current OpenWrt calls it
           # kmod-usb-gadget-fs (USB FunctionFS support).
           sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
+          test -f "$ADB_MAKEFILE"
 
       - name: Add PassWall and Xray feeds
         working-directory: openwrt
