@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.5
+  FIRMWARE_VERSION: v3.1.6
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -111,6 +111,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # The repository may already list the legacy HandsomeMod feed.
+          # Do not install that entire feed: only android-tools is copied
+          # later, while its old graphics packages are incompatible here.
+          sed -i '/^src-git handsomefeed /d' feeds.conf.default
+          rm -rf feeds/handsomefeed package/feeds/handsomefeed
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
 
@@ -164,7 +169,10 @@ jobs:
             in_block && /^endef$/ { in_block=0 }
             in_block && skip && /^[[:space:]]+CONFIG_/ { next }
             in_block && skip { skip=0 }
-            in_block && /^[[:space:]]+KCONFIG=.*CONFIG_USB_FUNCTIONFS/ {
+            # Different ImmortalWrt snapshots format this as either
+            # `KCONFIG:=CONFIG_USB_FUNCTIONFS \` or `KCONFIG:= \` followed by
+            # CONFIG_USB_FUNCTIONFS on the next line. Replace both forms.
+            in_block && /^[[:space:]]+KCONFIG[[:space:]]*:=/ {
               print "  KCONFIG:=CONFIG_USB_FUNCTIONFS \134";
               print "\tCONFIG_USB_FUNCTIONFS_ETH=n \134";
               print "\tCONFIG_USB_FUNCTIONFS_RNDIS=n \134";
