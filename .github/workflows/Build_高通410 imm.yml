@@ -513,15 +513,40 @@ jobs:
           gzip -cd "$SYSTEM_ARCHIVE" > "$SPARSE_IMAGE"
           simg2img "$SPARSE_IMAGE" "$RAW_IMAGE"
 
-          debugfs -R 'stat /etc/init.d/adbd' "$RAW_IMAGE" 2>&1 | grep -q 'Inode:'
-          debugfs -R 'stat /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin' "$RAW_IMAGE" 2>&1 | grep -q 'Inode:'
-          FIRMWARE_LIST="$(debugfs -R 'find /lib/firmware' "$RAW_IMAGE" 2>&1)"
-          printf '%s\n' "$FIRMWARE_LIST"
-          printf '%s\n' "$FIRMWARE_LIST" | grep -Eiq '(wcnss|WCNSS_qcom_wlan).*\.mdt'
+          debugfs_stat() {
+            local path="$1"
+            local output
+            output="$(debugfs -R "stat $path" "$RAW_IMAGE" 2>&1 || true)"
+            if grep -qE '^Inode:' <<< "$output"; then
+              printf '%s\n' "$output"
+              return 0
+            fi
+            printf 'missing %s\n%s\n' "$path" "$output" >&2
+            return 1
+          }
 
-          MODULE_LIST="$(debugfs -R 'find /lib/modules' "$RAW_IMAGE" 2>&1)"
-          printf '%s\n' "$MODULE_LIST" | grep -Eq 'usb_f_rndis\.ko'
-          printf '%s\n' "$MODULE_LIST" | grep -Eq 'u_ether\.ko'
+          debugfs_stat /etc/init.d/adbd >/dev/null
+          debugfs_stat /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin >/dev/null
+
+          FIRMWARE_FOUND=0
+          for firmware in \
+            /lib/firmware/wlan/prima/wcnss.mdt \
+            /lib/firmware/wlan/prima/WCNSS_qcom_wlan.mdt; do
+            if debugfs_stat "$firmware" >/dev/null; then
+              echo "found Wi-Fi firmware: $firmware"
+              FIRMWARE_FOUND=1
+              break
+            fi
+          done
+          [[ "$FIRMWARE_FOUND" -eq 1 ]] || { echo 'WCNSS firmware MDT file not found' >&2; exit 1; }
+
+          MODULE_DUMP="$RUNNER_TEMP/ufi001c-modules"
+          mkdir -p "$MODULE_DUMP"
+          debugfs -R "rdump /lib/modules $MODULE_DUMP" "$RAW_IMAGE" >/dev/null 2>&1
+          MODULE_LIST="$(find "$MODULE_DUMP" -type f -printf '%f\n' | sort)"
+          printf '%s\n' "$MODULE_LIST"
+          printf '%s\n' "$MODULE_LIST" | grep -Eq '^usb_f_rndis\.ko(\..*)?$'
+          printf '%s\n' "$MODULE_LIST" | grep -Eq '^u_ether\.ko(\..*)?$'
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
