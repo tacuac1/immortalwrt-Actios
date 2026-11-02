@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.0.7
+  FIRMWARE_VERSION: v3.0.8
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -200,6 +200,11 @@ jobs:
           CONFIG_PACKAGE_kmod-usb-lib-composite=y
           CONFIG_PACKAGE_kmod-usb-gadget-fs=y
           CONFIG_PACKAGE_kmod-fs-configfs=y
+          # ADB uses FunctionFS only; disable Ethernet/RNDIS variants that
+          # require u_ether.ko and break kmod-usb-gadget-fs packaging.
+          CONFIG_USB_FUNCTIONFS_GENERIC=y
+          CONFIG_USB_FUNCTIONFS_ETH=n
+          CONFIG_USB_FUNCTIONFS_RNDIS=n
 
           # PassWall/Xray support for creating a VMess server in LuCI.
           CONFIG_PACKAGE_luci-app-passwall=y
@@ -232,6 +237,9 @@ jobs:
           grep -q '^CONFIG_PACKAGE_uhttpd-mod-ubus=y$' .config
           grep -q '^CONFIG_PACKAGE_android-tools-adbd=y$' .config
           grep -q '^CONFIG_PACKAGE_kmod-usb-gadget-fs=y$' .config
+          grep -q '^CONFIG_USB_FUNCTIONFS_GENERIC=y$' .config
+          grep -q '^CONFIG_USB_FUNCTIONFS_ETH=n$' .config
+          grep -q '^CONFIG_USB_FUNCTIONFS_RNDIS=n$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y$' .config
           grep -q '^CONFIG_PACKAGE_xray-core=y$' .config
@@ -352,7 +360,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          make download -j"$(nproc)"
+          # Serial download avoids misleading parallel failures from the
+          # openstick feed and makes the failing source visible in the log.
+          make download -j1 V=s
 
       - name: Build firmware
         working-directory: openwrt
