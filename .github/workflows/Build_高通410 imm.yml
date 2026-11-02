@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.1
+  FIRMWARE_VERSION: v3.1.2
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -137,6 +137,48 @@ jobs:
           sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
           test -f "$ADB_MAKEFILE"
 
+      - name: Force pure FunctionFS kernel options for ADB
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          USB_MODULES_MK=package/kernel/linux/modules/usb.mk
+          test -f "$USB_MODULES_MK"
+
+          if ! awk '
+            /^define KernelPackage\/usb-gadget-fs$/ { in_block=1 }
+            in_block && /^endef$/ { in_block=0 }
+            in_block && /CONFIG_USB_FUNCTIONFS_ETH=n/ { eth=1 }
+            in_block && /CONFIG_USB_FUNCTIONFS_RNDIS=n/ { rndis=1 }
+            END { exit !(eth && rndis) }
+          ' "$USB_MODULES_MK"; then
+            awk '
+              /^define KernelPackage\/usb-gadget-fs$/ { in_block=1 }
+              in_block && /^endef$/ { in_block=0 }
+              in_block && skip && /^[[:space:]]+CONFIG_USB_FUNCTIONFS/ { next }
+              in_block && skip { skip=0 }
+              in_block && /^[[:space:]]+KCONFIG:=CONFIG_USB_FUNCTIONFS/ {
+                print "  KCONFIG:=CONFIG_USB_FUNCTIONFS \134";
+                print "\tCONFIG_USB_FUNCTIONFS_ETH=n \134";
+                print "\tCONFIG_USB_FUNCTIONFS_RNDIS=n";
+                skip=1
+                replaced=1
+                next
+              }
+              { print }
+              END { if (!replaced) exit 1 }
+            ' "$USB_MODULES_MK" > "$USB_MODULES_MK.tmp"
+            mv "$USB_MODULES_MK.tmp" "$USB_MODULES_MK"
+          fi
+
+          awk '
+            /^define KernelPackage\/usb-gadget-fs$/ { in_block=1 }
+            in_block && /^endef$/ { in_block=0 }
+            in_block && /CONFIG_USB_FUNCTIONFS_ETH=n/ { eth=1 }
+            in_block && /CONFIG_USB_FUNCTIONFS_RNDIS=n/ { rndis=1 }
+            END { exit !(eth && rndis) }
+          ' "$USB_MODULES_MK"
+
       - name: Add PassWall and Xray feeds
         working-directory: openwrt
         shell: bash
@@ -200,10 +242,6 @@ jobs:
           CONFIG_PACKAGE_kmod-usb-lib-composite=y
           CONFIG_PACKAGE_kmod-usb-gadget-fs=y
           CONFIG_PACKAGE_kmod-fs-configfs=y
-          # ADB uses FunctionFS only; disable Ethernet/RNDIS variants that
-          # require u_ether.ko and break kmod-usb-gadget-fs packaging.
-          CONFIG_USB_FUNCTIONFS_ETH=n
-          CONFIG_USB_FUNCTIONFS_RNDIS=n
 
           # PassWall/Xray support for creating a VMess server in LuCI.
           CONFIG_PACKAGE_luci-app-passwall=y
@@ -236,8 +274,6 @@ jobs:
           grep -q '^CONFIG_PACKAGE_uhttpd-mod-ubus=y$' .config
           grep -q '^CONFIG_PACKAGE_android-tools-adbd=y$' .config
           grep -q '^CONFIG_PACKAGE_kmod-usb-gadget-fs=y$' .config
-          grep -Eq '^(CONFIG_USB_FUNCTIONFS_ETH=n|# CONFIG_USB_FUNCTIONFS_ETH is not set)$' .config
-          grep -Eq '^(CONFIG_USB_FUNCTIONFS_RNDIS=n|# CONFIG_USB_FUNCTIONFS_RNDIS is not set)$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y$' .config
           grep -q '^CONFIG_PACKAGE_xray-core=y$' .config
