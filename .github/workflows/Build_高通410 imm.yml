@@ -147,10 +147,16 @@ jobs:
           grep -q '^src-git passwall_packages ' feeds.conf.default || \
             printf 'src-git passwall_packages %s;main\n' "$PASSWALL_PACKAGES_URL" >> feeds.conf.default
           ./scripts/feeds update passwall_luci passwall_packages
-          ./scripts/feeds install -p passwall_luci luci-app-passwall
-          ./scripts/feeds install -p passwall_packages xray-core
-          test -d package/feeds/passwall_luci/luci-app-passwall
-          test -d package/feeds/passwall_packages/xray-core
+          PASSWALL_LUCI_DIR="$(dirname "$(find -L feeds/passwall_luci -type f \
+            -path '*/luci-app-passwall/Makefile' -print -quit)")"
+          XRAY_DIR="$(dirname "$(find -L feeds/passwall_packages -type f \
+            -path '*/xray-core/Makefile' -print -quit)")"
+          test -f "$PASSWALL_LUCI_DIR/Makefile"
+          test -f "$XRAY_DIR/Makefile"
+          rm -rf package/passwall/luci-app-passwall package/passwall/xray-core
+          mkdir -p package/passwall
+          cp -a "$PASSWALL_LUCI_DIR" package/passwall/luci-app-passwall
+          cp -a "$XRAY_DIR" package/passwall/xray-core
 
       - name: Configure UFI-001C, LuCI and USB ADB
         working-directory: openwrt
