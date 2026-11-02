@@ -28,7 +28,9 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.0.5
+  FIRMWARE_VERSION: v3.0.7
+  PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
+  PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
 jobs:
   build:
@@ -112,7 +114,37 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a -f
 
-      - name: Configure UFI-001C and LuCI only
+      - name: Add HandsomeMod adbd feed
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q '^src-git handsomefeed ' feeds.conf.default || \
+            printf '%s\n' 'src-git handsomefeed https://github.com/HandsomeMod/handsomefeed.git' >> feeds.conf.default
+          ./scripts/feeds update handsomefeed
+          ./scripts/feeds install -p handsomefeed android-tools-adbd
+          ADB_MAKEFILE="package/feeds/handsomefeed/android-tools/Makefile"
+          test -f "$ADB_MAKEFILE"
+          # The feed uses the old package name; current OpenWrt calls it
+          # kmod-usb-gadget-fs (USB FunctionFS support).
+          sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
+
+      - name: Add PassWall and Xray feeds
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q '^src-git passwall_luci ' feeds.conf.default || \
+            printf 'src-git passwall_luci %s;main\n' "$PASSWALL_LUCI_URL" >> feeds.conf.default
+          grep -q '^src-git passwall_packages ' feeds.conf.default || \
+            printf 'src-git passwall_packages %s;main\n' "$PASSWALL_PACKAGES_URL" >> feeds.conf.default
+          ./scripts/feeds update passwall_luci passwall_packages
+          ./scripts/feeds install -p passwall_luci luci-app-passwall
+          ./scripts/feeds install -p passwall_packages xray-core
+          test -d package/feeds/passwall_luci/luci-app-passwall
+          test -d package/feeds/passwall_packages/xray-core
+
+      - name: Configure UFI-001C, LuCI and USB ADB
         working-directory: openwrt
         shell: bash
         run: |
@@ -148,8 +180,20 @@ jobs:
           CONFIG_PACKAGE_firewall4=y
           CONFIG_PACKAGE_nftables=y
 
+          # ADB over the device USB port.
+          CONFIG_PACKAGE_android-tools-adbd=y
+          CONFIG_PACKAGE_kmod-usb-gadget=y
+          CONFIG_PACKAGE_kmod-usb-lib-composite=y
+          CONFIG_PACKAGE_kmod-usb-gadget-fs=y
+          CONFIG_PACKAGE_kmod-fs-configfs=y
+
+          # PassWall/Xray support for creating a VMess server in LuCI.
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
+          CONFIG_PACKAGE_xray-core=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=n
+
           # Exclude unrelated services and add-on functions.
-          CONFIG_PACKAGE_luci-app-passwall=n
           CONFIG_PACKAGE_luci-app-ttyd=n
           CONFIG_PACKAGE_ttyd=n
           CONFIG_PACKAGE_dropbear=n
@@ -172,8 +216,68 @@ jobs:
           grep -q '^CONFIG_PACKAGE_luci=y$' .config
           grep -q '^CONFIG_PACKAGE_uhttpd=y$' .config
           grep -q '^CONFIG_PACKAGE_uhttpd-mod-ubus=y$' .config
+          grep -q '^CONFIG_PACKAGE_android-tools-adbd=y$' .config
+          grep -q '^CONFIG_PACKAGE_kmod-usb-gadget-fs=y$' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y$' .config
+          grep -q '^CONFIG_PACKAGE_xray-core=y$' .config
 
-          mkdir -p files/etc/uci-defaults
+          mkdir -p files/etc/uci-defaults files/etc/init.d
+
+          # Replace the feed init script with a small configfs gadget that
+          # exposes only FunctionFS ADB on the UFI-001C USB device port.
+          cat > files/etc/init.d/adbd <<'EOF'
+          #!/bin/sh /etc/rc.common
+          START=80
+          STOP=99
+          USE_PROCD=1
+
+          GADGET=/sys/kernel/config/usb_gadget/ufi001c
+          FFS=/dev/usb-ffs/adb
+
+          start_service() {
+              modprobe usb_f_fs 2>/dev/null || true
+              modprobe libcomposite 2>/dev/null || true
+              mkdir -p /sys/kernel/config /dev/usb-ffs/adb
+              mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config
+              mountpoint -q "$FFS" || mount -t functionfs adb "$FFS"
+
+              procd_open_instance
+              procd_set_param command /usr/bin/adbd -D
+              procd_set_param respawn
+              procd_close_instance
+
+              i=0
+              while [ ! -e "$FFS/ep0" ] && [ "$i" -lt 10 ]; do
+                  sleep 1
+                  i=$((i + 1))
+              done
+              [ -e "$FFS/ep0" ] || return 0
+
+              mkdir -p "$GADGET/strings/0x409" "$GADGET/configs/c.1/strings/0x409" "$GADGET/functions/ffs.adb"
+              echo 0x18d1 > "$GADGET/idVendor"
+              echo 0x4ee7 > "$GADGET/idProduct"
+              echo UFI001C > "$GADGET/strings/0x409/serialnumber"
+              echo UFI-001C > "$GADGET/strings/0x409/manufacturer"
+              echo 'ImmortalWrt UFI-001C ADB' > "$GADGET/strings/0x409/product"
+              echo 0x80 > "$GADGET/configs/c.1/bmAttributes"
+              echo 500 > "$GADGET/configs/c.1/MaxPower"
+              ln -sf "$GADGET/functions/ffs.adb" "$GADGET/configs/c.1/ffs.adb"
+
+              for udc in /sys/class/udc/*; do
+                  [ -e "$udc" ] || continue
+                  echo "$(basename "$udc")" > "$GADGET/UDC"
+                  break
+              done
+          }
+
+          stop_service() {
+              [ -e "$GADGET/UDC" ] && echo none > "$GADGET/UDC" || true
+              killall adbd 2>/dev/null || true
+          }
+          EOF
+          chmod 0755 files/etc/init.d/adbd
+
           cat > files/etc/uci-defaults/99-ufi001c-luci-only <<'EOF'
           #!/bin/sh
           set -eu
@@ -221,10 +325,12 @@ jobs:
 
           cat > files/README-LUCI.txt <<EOF
           ImmortalWrt UFI-001C ${FIRMWARE_VERSION}
-          Minimal image: LuCI web interface and Wi-Fi AP only.
+          Image: LuCI web interface, Wi-Fi AP, USB ADB and PassWall/Xray.
           LuCI address: http://192.168.50.1
           Wi-Fi SSID: ${WIFI_SSID}
           Default root/LuCI password: ${ROOT_PASSWORD}
+          USB ADB: enabled by android-tools-adbd and FunctionFS
+          VMess server: configure an inbound in LuCI -> Services -> PassWall.
           EOF
 
       - name: Download package sources
@@ -276,7 +382,7 @@ jobs:
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: immortalwrt-ufi001c-luci-minimal-${{ env.FIRMWARE_VERSION }}-${{ github.run_number }}
+          name: immortalwrt-ufi001c-luci-adb-passwall-${{ env.FIRMWARE_VERSION }}-${{ github.run_number }}
           if-no-files-found: error
           compression-level: 0
           path: |
