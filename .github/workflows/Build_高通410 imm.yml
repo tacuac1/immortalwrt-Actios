@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.13
+  FIRMWARE_VERSION: v3.1.14
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -153,9 +153,11 @@ jobs:
           set -euxo pipefail
           grep -q '^src-git handsomefeed ' feeds.conf.default || \
             printf '%s\n' 'src-git handsomefeed https://github.com/HandsomeMod/handsomefeed.git' >> feeds.conf.default
-          ./scripts/feeds update handsomefeed
-          # Do not install the whole legacy feed: its graphics packages
-          # (kmscube/weston) are incompatible with the current source tree.
+          # Do not run scripts/feeds update for this legacy feed: it parses
+          # incompatible graphics packages (kmscube/weston/mesa) and exits 1.
+          # Clone it only to copy the single android-tools package we need.
+          rm -rf feeds/handsomefeed
+          git clone --depth=1 https://github.com/HandsomeMod/handsomefeed.git feeds/handsomefeed
           ADB_SOURCE_MAKEFILE="$(find -L feeds/handsomefeed -type f -name Makefile -print0 \
             | xargs -0 grep -l '^PKG_NAME:=android-tools$' \
             | head -n 1)"
