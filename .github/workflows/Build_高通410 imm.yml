@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.10
+  FIRMWARE_VERSION: v3.1.11
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -36,6 +36,7 @@ jobs:
   build:
     name: Build UFI-001C LuCI minimal firmware
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
     permissions:
       contents: read
 
@@ -117,7 +118,12 @@ jobs:
           sed -i '/^src-git handsomefeed /d' feeds.conf.default
           rm -rf feeds/handsomefeed package/feeds/handsomefeed
           ./scripts/feeds update -a
-          ./scripts/feeds install -a -f
+          # Install only packages used by this image. Installing every feed
+          # package pulls legacy Qt5/video Kconfig entries into defconfig;
+          # several of those entries self-depend and produce recursive
+          # dependency diagnostics even though they are not selected.
+          ./scripts/feeds install -f \
+            luci luci-base luci-app-firewall
 
       - name: Fix UFI-001C Qualcomm firmware source hash
         working-directory: openwrt
@@ -468,7 +474,9 @@ jobs:
           set -uo pipefail
           make -j"$(nproc)" V=s 2>&1 | tee build-parallel.log
           status=${PIPESTATUS[0]}
-          if [[ "$status" -ne 0 ]]; then
+          # SIGTERM/SIGINT means the runner was canceled or shut down; retrying
+          # serially only wastes the remaining cancellation window.
+          if [[ "$status" -ne 0 && "$status" -ne 130 && "$status" -ne 143 ]]; then
             make -j1 V=s 2>&1 | tee build-single.log
             status=${PIPESTATUS[0]}
           fi
