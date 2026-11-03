@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.17
+  FIRMWARE_VERSION: v3.1.18
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -216,7 +216,11 @@ jobs:
           # The feed uses the old package name; current OpenWrt calls it
           # kmod-usb-gadget-fs (USB FunctionFS support).
           sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
+          # apk rejects the legacy '+' in 4.2.2+git20130218. Keep the same
+          # source commit while using a package-version-safe representation.
+          sed -i 's/^PKG_VERSION:=4\.2\.2+git20130218$/PKG_VERSION:=4.2.2.20130218/' "$ADB_MAKEFILE"
           test -f "$ADB_MAKEFILE"
+          grep -q '^PKG_VERSION:=4\.2\.2\.20130218$' "$ADB_MAKEFILE"
 
       - name: Configure FunctionFS ADB plus RNDIS kernel modules
         working-directory: openwrt
