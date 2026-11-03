@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.16
+  FIRMWARE_VERSION: v3.1.17
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -198,9 +198,21 @@ jobs:
           +        syscall(SYS_capset, &header, cap);
                    D("Local port disabled\n");
                } else {
+          --- a/core/adbd/adb_auth_client.c
+          +++ b/core/adbd/adb_auth_client.c
+          @@ -55,1 +55,2 @@
+          +extern int b64_pton(char const *src, u_char *target, size_t targsize);
+           static void read_keys(const char *file, struct listnode *list)
+          --- a/adbd.mk
+          +++ b/adbd.mk
+          @@ -1,1 +1,2 @@
+           adbd_SRC_FILES += adb_auth_client.c
+          +adbd_SRC_FILES += base64.c
           PATCH
           test -s "$ADB_PATCH"
           grep -q 'syscall(SYS_capset, &header, cap);' "$ADB_PATCH"
+          grep -q 'extern int b64_pton' "$ADB_PATCH"
+          grep -q 'adbd_SRC_FILES += base64.c' "$ADB_PATCH"
           # The feed uses the old package name; current OpenWrt calls it
           # kmod-usb-gadget-fs (USB FunctionFS support).
           sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
@@ -520,10 +532,16 @@ jobs:
           # before the full firmware build starts.
           make package/utils/android-tools/prepare V=s
           ADB_SOURCE="$(find -L build_dir -type f -path '*/core/adbd/adb.c' -print -quit)"
+          ADB_AUTH_SOURCE="$(find -L build_dir -type f -path '*/core/adbd/adb_auth_client.c' -print -quit)"
+          ADB_MK="$(find -L build_dir -type f -name adbd.mk -print -quit)"
           test -n "$ADB_SOURCE"
+          test -n "$ADB_AUTH_SOURCE"
+          test -n "$ADB_MK"
           grep -q '#include <sys/syscall.h>' "$ADB_SOURCE"
           grep -q 'syscall(SYS_prctl, PR_SET_KEEPCAPS' "$ADB_SOURCE"
           grep -q 'syscall(SYS_capset, &header, cap);' "$ADB_SOURCE"
+          grep -q 'extern int b64_pton' "$ADB_AUTH_SOURCE"
+          grep -q 'adbd_SRC_FILES += base64.c' "$ADB_MK"
 
       - name: Build firmware
         working-directory: openwrt
