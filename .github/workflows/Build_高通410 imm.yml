@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.12
+  FIRMWARE_VERSION: v3.1.13
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -164,6 +164,15 @@ jobs:
           mkdir -p package/utils
           cp -a "$(dirname "$ADB_SOURCE_MAKEFILE")" package/utils/android-tools
           ADB_MAKEFILE=package/utils/android-tools/Makefile
+          ADB_SOURCE=package/utils/android-tools/core/adbd/adb.c
+          test -f "$ADB_SOURCE"
+          # The legacy HandsomeMod adbd source assumes Android libc headers.
+          # OpenWrt/musl provides prctl but requires the Linux syscall header;
+          # call capset through SYS_capset to avoid a libcap-only declaration.
+          sed -i '1i#include <sys/prctl.h>' "$ADB_SOURCE"
+          sed -i '2i#include <sys/syscall.h>' "$ADB_SOURCE"
+          sed -i 's/capset(&header, cap);/syscall(SYS_capset, \&header, cap);/' "$ADB_SOURCE"
+          grep -q 'syscall(SYS_capset' "$ADB_SOURCE"
           # The feed uses the old package name; current OpenWrt calls it
           # kmod-usb-gadget-fs (USB FunctionFS support).
           sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
