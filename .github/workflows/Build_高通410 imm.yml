@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.14
+  FIRMWARE_VERSION: v3.1.15
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -166,8 +166,11 @@ jobs:
           mkdir -p package/utils
           cp -a "$(dirname "$ADB_SOURCE_MAKEFILE")" package/utils/android-tools
           ADB_MAKEFILE=package/utils/android-tools/Makefile
-          ADB_SOURCE=package/utils/android-tools/core/adbd/adb.c
-          test -f "$ADB_SOURCE"
+          ADB_SOURCE="$(find -L package/utils/android-tools -type f -path '*/adbd/adb.c' -print -quit)"
+          if [[ -z "$ADB_SOURCE" ]]; then
+            ADB_SOURCE="$(find -L package/utils/android-tools -type f -name adb.c -print -quit)"
+          fi
+          test -n "$ADB_SOURCE"
           # The legacy HandsomeMod adbd source assumes Android libc headers.
           # OpenWrt/musl provides prctl but requires the Linux syscall header;
           # call capset through SYS_capset to avoid a libcap-only declaration.
