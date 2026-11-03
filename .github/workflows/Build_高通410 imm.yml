@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.15
+  FIRMWARE_VERSION: v3.1.16
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -166,18 +166,41 @@ jobs:
           mkdir -p package/utils
           cp -a "$(dirname "$ADB_SOURCE_MAKEFILE")" package/utils/android-tools
           ADB_MAKEFILE=package/utils/android-tools/Makefile
-          ADB_SOURCE="$(find -L package/utils/android-tools -type f -path '*/adbd/adb.c' -print -quit)"
-          if [[ -z "$ADB_SOURCE" ]]; then
-            ADB_SOURCE="$(find -L package/utils/android-tools -type f -name adb.c -print -quit)"
-          fi
-          test -n "$ADB_SOURCE"
-          # The legacy HandsomeMod adbd source assumes Android libc headers.
-          # OpenWrt/musl provides prctl but requires the Linux syscall header;
-          # call capset through SYS_capset to avoid a libcap-only declaration.
-          sed -i '1i#include <sys/prctl.h>' "$ADB_SOURCE"
-          sed -i '2i#include <sys/syscall.h>' "$ADB_SOURCE"
-          sed -i 's/capset(&header, cap);/syscall(SYS_capset, \&header, cap);/' "$ADB_SOURCE"
-          grep -q 'syscall(SYS_capset' "$ADB_SOURCE"
+          # The feed contains the package recipe only; adb.c is downloaded into
+          # build_dir later. Patch it through OpenWrt's normal package patch
+          # mechanism instead of looking for source files in the feed checkout.
+          ADB_PATCH=package/utils/android-tools/patches/100-musl-adbd.patch
+          mkdir -p "$(dirname "$ADB_PATCH")"
+          cat > "$ADB_PATCH" <<'PATCH'
+          --- a/core/adbd/adb.c
+          +++ b/core/adbd/adb.c
+          @@ -33,7 +33,8 @@
+           #if !ADB_HOST
+           #include "android_filesystem_config.h"
+           #include <linux/capability.h>
+           #include <linux/prctl.h>
+          +#include <sys/syscall.h>
+           #include <sys/mount.h>
+           #else
+           #include "usb_vendors.h"
+          @@ -1168,6 +1168,6 @@
+                   struct __user_cap_header_struct header;
+                   struct __user_cap_data_struct cap[2];
+          
+          -        if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0) {
+          +        if (syscall(SYS_prctl, PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0) {
+                       exit(1);
+                   }
+          @@ -1205,5 +1205,5 @@
+                   cap[CAP_TO_INDEX(CAP_SYS_BOOT)].effective |= CAP_TO_MASK(CAP_SYS_BOOT);
+                   cap[CAP_TO_INDEX(CAP_SYS_BOOT)].permitted |= CAP_TO_MASK(CAP_SYS_BOOT);
+          -        capset(&header, cap);
+          +        syscall(SYS_capset, &header, cap);
+                   D("Local port disabled\n");
+               } else {
+          PATCH
+          test -s "$ADB_PATCH"
+          grep -q 'syscall(SYS_capset, &header, cap);' "$ADB_PATCH"
           # The feed uses the old package name; current OpenWrt calls it
           # kmod-usb-gadget-fs (USB FunctionFS support).
           sed -i 's/kmod-usb-gadget-functionfs/kmod-usb-gadget-fs/g' "$ADB_MAKEFILE"
@@ -487,6 +510,20 @@ jobs:
           # Serial download avoids misleading parallel failures from the
           # openstick feed and makes the failing source visible in the log.
           make download -j1 V=s
+
+      - name: Prepare and verify android-tools compatibility patch
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Force the package prepare phase now, so patch failures are reported
+          # before the full firmware build starts.
+          make package/utils/android-tools/prepare V=s
+          ADB_SOURCE="$(find -L build_dir -type f -path '*/core/adbd/adb.c' -print -quit)"
+          test -n "$ADB_SOURCE"
+          grep -q '#include <sys/syscall.h>' "$ADB_SOURCE"
+          grep -q 'syscall(SYS_prctl, PR_SET_KEEPCAPS' "$ADB_SOURCE"
+          grep -q 'syscall(SYS_capset, &header, cap);' "$ADB_SOURCE"
 
       - name: Build firmware
         working-directory: openwrt
