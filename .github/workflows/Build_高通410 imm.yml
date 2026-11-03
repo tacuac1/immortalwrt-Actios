@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.11
+  FIRMWARE_VERSION: v3.1.12
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -93,6 +93,13 @@ jobs:
             git -C openwrt checkout --detach "$CUSTOM_HASH"
           fi
           git -C openwrt log -1 --oneline
+
+      - name: Set up Go for Xray
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          check-latest: true
+          cache: false
 
       - name: Restore libffi package if required by this source snapshot
         working-directory: openwrt
