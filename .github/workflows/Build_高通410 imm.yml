@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.24
+  FIRMWARE_VERSION: v3.1.25
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -132,7 +132,10 @@ jobs:
           ./scripts/feeds install -f \
             luci luci-base luci-app-firewall \
             luci-compat luci-lua-runtime luci-lib-base luci-lib-nixio \
-            luci-lib-ip luci-lib-jsonc ucode-mod-lua
+            luci-lib-ip luci-lib-jsonc ucode-mod-lua \
+            qcom-msm8916-modem-openstick-ufi001c-firmware \
+            qcom-msm8916-openstick-ufi001c-wcnss-firmware \
+            qcom-msm8916-wcnss-openstick-ufi001c-nv
 
       - name: Fix UFI-001C Qualcomm firmware source hash
         working-directory: openwrt
