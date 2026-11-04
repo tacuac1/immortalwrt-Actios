@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.26
+  FIRMWARE_VERSION: v3.1.27
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -449,23 +449,38 @@ jobs:
           GADGET=/sys/kernel/config/usb_gadget/ufi001c
           FFS=/dev/usb-ffs/adb
           RNDIS_FUNCTION=$GADGET/functions/rndis.usb0
+          LOG=/tmp/adbd-gadget.log
+
+          log() {
+              printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$LOG"
+          }
 
           start_service() {
-              modprobe usb_f_fs 2>/dev/null || true
-              modprobe usb_f_rndis 2>/dev/null || true
-              modprobe u_ether 2>/dev/null || true
-              modprobe libcomposite 2>/dev/null || true
-              mkdir -p /sys/kernel/config /dev/usb-ffs/adb
-              mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config
-              mountpoint -q "$FFS" || mount -t functionfs adb "$FFS"
+              : > "$LOG"
+              log 'starting ADB+RNDIS gadget'
+              mkdir -p /data/misc/adb /etc/adb /sys/kernel/config /dev/usb-ffs/adb
+              chmod 0700 /data/misc/adb /etc/adb 2>/dev/null || true
+              modprobe usb_f_fs 2>>"$LOG" || log 'modprobe usb_f_fs failed'
+              modprobe u_ether 2>>"$LOG" || log 'modprobe u_ether failed'
+              modprobe usb_f_rndis 2>>"$LOG" || log 'modprobe usb_f_rndis failed'
+              modprobe libcomposite 2>>"$LOG" || log 'modprobe libcomposite failed'
+              mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config 2>>"$LOG" || true
+              mountpoint -q "$FFS" || mount -t functionfs adb "$FFS" 2>>"$LOG" || true
+              mountpoint -q /sys/kernel/config && log 'configfs mounted' || log 'configfs is not mounted'
+              mountpoint -q "$FFS" && log 'FunctionFS mounted' || log 'FunctionFS is not mounted'
 
               if [ -d "$GADGET" ]; then
                   [ -e "$GADGET/UDC" ] && echo none > "$GADGET/UDC" || true
+                  rm -f "$GADGET/configs/c.1/ffs.adb" "$GADGET/configs/c.1/rndis.usb0" 2>/dev/null || true
                   rm -rf "$GADGET"
               fi
 
+              # adbd creates FunctionFS endpoints asynchronously. Keep it in
+              # the foreground under procd so failures are visible in logread.
               procd_open_instance
               procd_set_param command /usr/bin/adbd -D
+              procd_set_param stdout 1
+              procd_set_param stderr 1
               procd_set_param respawn
               procd_close_instance
 
@@ -474,7 +489,11 @@ jobs:
                   sleep 1
                   i=$((i + 1))
               done
-              [ -e "$FFS/ep0" ] || return 0
+              if [ ! -e "$FFS/ep0" ]; then
+                  log 'adbd did not create FunctionFS ep0 within 10 seconds'
+                  return 0
+              fi
+              log 'FunctionFS ep0 is ready'
 
               mkdir -p "$GADGET/strings/0x409" "$GADGET/configs/c.1/strings/0x409" "$GADGET/functions/ffs.adb" "$RNDIS_FUNCTION"
               echo 0x18d1 > "$GADGET/idVendor"
@@ -494,9 +513,14 @@ jobs:
                   sleep 1
                   i=$((i + 1))
               done
+              if [ -z "$(ls -A /sys/class/udc 2>/dev/null)" ]; then
+                  log 'no USB device controller found in /sys/class/udc'
+                  return 0
+              fi
               for udc in /sys/class/udc/*; do
                   [ -e "$udc" ] || continue
                   echo "$(basename "$udc")" > "$GADGET/UDC"
+                  log "bound gadget to $(basename "$udc")"
                   break
               done
               ifup lan 2>/dev/null || true
@@ -505,17 +529,50 @@ jobs:
           stop_service() {
               [ -e "$GADGET/UDC" ] && echo none > "$GADGET/UDC" || true
               killall adbd 2>/dev/null || true
+              log 'stopped ADB+RNDIS gadget'
           }
           EOF
           chmod 0755 files/etc/init.d/adbd
           mkdir -p files/etc/rc.d
           ln -sfn ../init.d/adbd files/etc/rc.d/S80adbd
 
+          # Qualcomm WCNSS firmware is shipped in /lib/firmware by the
+          # OpenStick feed, while some wcn36xx builds request it below
+          # /lib/firmware/wlan/prima. Provide both names before Wi-Fi starts.
+          cat > files/etc/init.d/ufi001c-wifi <<'EOF'
+          #!/bin/sh /etc/rc.common
+          START=75
+          STOP=10
+
+          start() {
+              mkdir -p /lib/firmware/wlan/prima
+              for part in mdt b00 b01 b02 b04 b06 b09 b10 b11; do
+                  [ -e "/lib/firmware/wcnss.$part" ] || continue
+                  ln -sfn "/lib/firmware/wcnss.$part" "/lib/firmware/wlan/prima/wcnss.$part"
+              done
+              if [ -e /lib/firmware/wcnss.mdt ]; then
+                  ln -sfn /lib/firmware/wcnss.mdt /lib/firmware/wlan/prima/WCNSS_qcom_wlan.mdt
+              fi
+              modprobe wcn36xx 2>/dev/null || true
+              i=0
+              while [ "$i" -lt 20 ]; do
+                  [ -d /sys/class/ieee80211 ] && [ -n "$(ls -A /sys/class/ieee80211 2>/dev/null)" ] && break
+                  sleep 1
+                  i=$((i + 1))
+              done
+              wifi reload 2>/dev/null || wifi up radio0 2>/dev/null || true
+          }
+          EOF
+          chmod 0755 files/etc/init.d/ufi001c-wifi
+          ln -sfn ../init.d/ufi001c-wifi files/etc/rc.d/S75ufi001c-wifi
+
           cat > files/etc/uci-defaults/99-ufi001c-luci-only <<'EOF'
           #!/bin/sh
           set -eu
 
+          uci -q get network.lan >/dev/null 2>&1 || uci set network.lan='interface'
           uci set system.@system[0].hostname='UFI-001C'
+          uci set network.lan.device='br-lan'
           uci set network.lan.proto='static'
           uci set network.lan.ipaddr='192.168.100.1'
           uci set network.lan.netmask='255.255.255.0'
@@ -525,17 +582,29 @@ jobs:
           LAN_DEVICE=$(uci -q get network.lan.device || echo br-lan)
           LAN_DEVICE_SECTION=$(uci -q show network | sed -n "s/^\(network\.[^=]*\)\.name='$LAN_DEVICE'$/\1/p" | head -n 1)
           if [ -n "$LAN_DEVICE_SECTION" ]; then
+            uci -q del_list "$LAN_DEVICE_SECTION.ports=usb0" || true
             uci add_list "$LAN_DEVICE_SECTION.ports=usb0"
           else
             uci set network.br_lan='device'
             uci set network.br_lan.name='br-lan'
             uci set network.br_lan.type='bridge'
+            uci -q del_list network.br_lan.ports='usb0' || true
             uci add_list network.br_lan.ports='usb0'
             uci set network.lan.device='br-lan'
           fi
 
           if [ ! -s /etc/config/wireless ]; then
             wifi config 2>/dev/null || true
+          fi
+
+          # If wifi config cannot run before the WCNSS driver is ready, create
+          # a usable 2.4 GHz radio so the AP section below is not orphaned.
+          if ! uci -q get wireless.radio0.type >/dev/null 2>&1; then
+              uci set wireless.radio0='wifi-device'
+              uci set wireless.radio0.type='mac80211'
+              uci set wireless.radio0.band='2g'
+              uci set wireless.radio0.channel='auto'
+              uci set wireless.radio0.htmode='HT20'
           fi
 
           AP_SECTION=$(uci -q show wireless | sed -n "s/^\\(wireless\\.[^=]*\\)=wifi-iface$/\\1/p" | head -n 1)
@@ -659,6 +728,25 @@ jobs:
             find "$TARGET_DIR" -maxdepth 1 -type f -printf '%f\n' | sort
             exit 1
           }
+
+          # EDL writes whole sectors and truncates a non-aligned raw boot image.
+          # Pad the ext4 boot archive so EDL flashing preserves its complete
+          # Android boot image (fastboot also accepts the trailing zeroes).
+          EXT4_BOOT_ARCHIVE="$(find "$TARGET_DIR" -maxdepth 1 -type f -name '*-ext4-boot.img.gz' -print -quit)"
+          [[ -n "$EXT4_BOOT_ARCHIVE" ]] || { echo "::error::ext4 boot archive not found"; exit 1; }
+          BOOT_RAW="$RUNNER_TEMP/ufi001c-boot.raw.img"
+          BOOT_PADDED="$RUNNER_TEMP/ufi001c-boot.padded.img"
+          gzip -cd "$EXT4_BOOT_ARCHIVE" > "$BOOT_RAW"
+          python3 - "$BOOT_RAW" "$BOOT_PADDED" <<'PY'
+          import pathlib
+          import sys
+
+          source = pathlib.Path(sys.argv[1]).read_bytes()
+          padded_size = ((len(source) + 511) // 512) * 512
+          pathlib.Path(sys.argv[2]).write_bytes(source + b"\0" * (padded_size - len(source)))
+          PY
+          gzip -n -c "$BOOT_PADDED" > "$EXT4_BOOT_ARCHIVE"
+          test "$(( $(stat -c '%s' "$BOOT_PADDED") % 512 ))" -eq 0
           find "$TARGET_DIR" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$TARGET_DIR/SHA256SUMS"
           cat "$TARGET_DIR/SHA256SUMS"
 
@@ -690,6 +778,8 @@ jobs:
 
           debugfs_stat "$SYSTEM_RAW_IMAGE" /etc/init.d/adbd >/dev/null
           debugfs_stat "$SYSTEM_RAW_IMAGE" /etc/rc.d/S80adbd >/dev/null
+          debugfs_stat "$SYSTEM_RAW_IMAGE" /etc/init.d/ufi001c-wifi >/dev/null
+          debugfs_stat "$SYSTEM_RAW_IMAGE" /etc/rc.d/S75ufi001c-wifi >/dev/null
 
           FIRMWARE_FOUND=0
           for firmware in \
