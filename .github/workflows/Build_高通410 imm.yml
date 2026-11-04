@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.22
+  FIRMWARE_VERSION: v3.1.23
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -130,7 +130,9 @@ jobs:
           # several of those entries self-depend and produce recursive
           # dependency diagnostics even though they are not selected.
           ./scripts/feeds install -f \
-            luci luci-base luci-app-firewall
+            luci luci-base luci-app-firewall \
+            luci-compat luci-lua-runtime luci-lib-base luci-lib-nixio \
+            luci-lib-ip luci-lib-jsonc ucode-mod-lua
 
       - name: Fix UFI-001C Qualcomm firmware source hash
         working-directory: openwrt
@@ -321,9 +323,6 @@ jobs:
             coreutils-timeout \
             curl \
             dns2socks \
-            luci-compat \
-            luci-lib-jsonc \
-            luci-lua-runtime \
             lyaml \
             microsocks \
             tcping; do
@@ -337,9 +336,6 @@ jobs:
             coreutils-timeout \
             curl \
             dns2socks \
-            luci-compat \
-            luci-lib-jsonc \
-            luci-lua-runtime \
             lyaml \
             microsocks \
             tcping; do
