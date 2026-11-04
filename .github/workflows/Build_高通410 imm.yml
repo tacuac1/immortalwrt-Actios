@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.23
+  FIRMWARE_VERSION: v3.1.24
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -385,6 +385,9 @@ jobs:
           CONFIG_PACKAGE_kmod-usb-lib-composite=y
           CONFIG_PACKAGE_kmod-usb-gadget-fs=y
           CONFIG_PACKAGE_kmod-fs-configfs=y
+          CONFIG_PACKAGE_qcom-msm8916-modem-openstick-ufi001c-firmware=y
+          CONFIG_PACKAGE_qcom-msm8916-openstick-ufi001c-wcnss-firmware=y
+          CONFIG_PACKAGE_qcom-msm8916-wcnss-openstick-ufi001c-nv=y
 
           # PassWall/Xray support for creating a VMess server in LuCI.
           CONFIG_PACKAGE_luci-app-passwall=y
@@ -417,11 +420,20 @@ jobs:
           grep -q '^CONFIG_PACKAGE_uhttpd-mod-ubus=y$' .config
           grep -q '^CONFIG_PACKAGE_android-tools-adbd=y$' .config
           grep -q '^CONFIG_PACKAGE_kmod-usb-gadget-fs=y$' .config
+          grep -q '^CONFIG_PACKAGE_qcom-msm8916-modem-openstick-ufi001c-firmware=y$' .config
+          grep -q '^CONFIG_PACKAGE_qcom-msm8916-openstick-ufi001c-wcnss-firmware=y$' .config
+          grep -q '^CONFIG_PACKAGE_qcom-msm8916-wcnss-openstick-ufi001c-nv=y$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y$' .config
           grep -q '^CONFIG_PACKAGE_xray-core=y$' .config
 
           mkdir -p files/etc/uci-defaults files/etc/init.d
+          mkdir -p files/lib/functions
+          curl --fail --show-error --location --retry 3 --retry-all-errors \
+            https://raw.githubusercontent.com/openwrt/openwrt/openwrt-23.05/package/base-files/files/lib/functions/network.sh \
+            --output files/lib/functions/network.sh
+          chmod 0644 files/lib/functions/network.sh
+          grep -q '^network_get_ipaddr()' files/lib/functions/network.sh
 
           # Replace the feed init script with a configfs composite gadget that
           # exposes FunctionFS ADB and an RNDIS network on the USB device port.
@@ -638,41 +650,42 @@ jobs:
           TARGET_DIR="bin/targets/msm89xx/msm8916"
           SYSTEM_ARCHIVE="$(find "$TARGET_DIR" -maxdepth 1 -type f -name '*-ext4-system.img.gz' -print -quit)"
           [[ -n "$SYSTEM_ARCHIVE" ]] || { echo "ext4 system image archive not found" >&2; find "$TARGET_DIR" -maxdepth 1 -type f -printf '%f\n'; exit 1; }
-          SPARSE_IMAGE="$RUNNER_TEMP/ufi001c-system.sparse.img"
-          RAW_IMAGE="$RUNNER_TEMP/ufi001c-system.raw.img"
-          gzip -cd "$SYSTEM_ARCHIVE" > "$SPARSE_IMAGE"
-          simg2img "$SPARSE_IMAGE" "$RAW_IMAGE"
+          SYSTEM_SPARSE_IMAGE="$RUNNER_TEMP/ufi001c-system.sparse.img"
+          SYSTEM_RAW_IMAGE="$RUNNER_TEMP/ufi001c-system.raw.img"
+          gzip -cd "$SYSTEM_ARCHIVE" > "$SYSTEM_SPARSE_IMAGE"
+          simg2img "$SYSTEM_SPARSE_IMAGE" "$SYSTEM_RAW_IMAGE"
 
           debugfs_stat() {
-            local path="$1"
+            local image="$1"
+            local path="$2"
             local output
-            output="$(debugfs -R "stat $path" "$RAW_IMAGE" 2>&1 || true)"
+            output="$(debugfs -R "stat $path" "$image" 2>&1 || true)"
             if grep -qE '^Inode:' <<< "$output"; then
               printf '%s\n' "$output"
               return 0
             fi
-            printf 'missing %s\n%s\n' "$path" "$output" >&2
+            printf 'missing %s in %s\n%s\n' "$path" "$image" "$output" >&2
             return 1
           }
 
-          debugfs_stat /etc/init.d/adbd >/dev/null
-          debugfs_stat /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin >/dev/null
+          debugfs_stat "$SYSTEM_RAW_IMAGE" /etc/init.d/adbd >/dev/null
 
           FIRMWARE_FOUND=0
           for firmware in \
+            /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin \
             /lib/firmware/wlan/prima/wcnss.mdt \
             /lib/firmware/wlan/prima/WCNSS_qcom_wlan.mdt; do
-            if debugfs_stat "$firmware" >/dev/null; then
+            if debugfs_stat "$SYSTEM_RAW_IMAGE" "$firmware" >/dev/null; then
               echo "found Wi-Fi firmware: $firmware"
               FIRMWARE_FOUND=1
               break
             fi
           done
-          [[ "$FIRMWARE_FOUND" -eq 1 ]] || { echo 'WCNSS firmware MDT file not found' >&2; exit 1; }
+          [[ "$FIRMWARE_FOUND" -eq 1 ]] || { echo 'WCNSS firmware MDT/NV file not found in system image' >&2; exit 1; }
 
           MODULE_DUMP="$RUNNER_TEMP/ufi001c-modules"
           mkdir -p "$MODULE_DUMP"
-          debugfs -R "rdump /lib/modules $MODULE_DUMP" "$RAW_IMAGE" >/dev/null 2>&1
+          debugfs -R "rdump /lib/modules $MODULE_DUMP" "$SYSTEM_RAW_IMAGE" >/dev/null 2>&1
           MODULE_LIST="$(find "$MODULE_DUMP" -type f -printf '%f\n' | sort)"
           printf '%s\n' "$MODULE_LIST"
           printf '%s\n' "$MODULE_LIST" | grep -Eq '^usb_f_rndis\.ko(\..*)?$'
