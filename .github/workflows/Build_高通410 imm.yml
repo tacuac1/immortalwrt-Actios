@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.21
+  FIRMWARE_VERSION: v3.1.22
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -327,7 +327,7 @@ jobs:
             lyaml \
             microsocks \
             tcping; do
-            sed -E -i "s/[+]${missing_dep}([[:space:]]|$)//g" "$PASSWALL_MAKEFILE"
+            sed -E -i "s/[+]${missing_dep}([^[:alnum:]_-]|$)/\\1/g" "$PASSWALL_MAKEFILE"
           done
           for missing_dep in \
             chinadns-ng \
@@ -343,7 +343,7 @@ jobs:
             lyaml \
             microsocks \
             tcping; do
-            ! grep -Eq -- "[+]${missing_dep}([[:space:]]|$)" "$PASSWALL_MAKEFILE"
+            ! grep -Eq -- "[+]${missing_dep}([^[:alnum:]_-]|$)" "$PASSWALL_MAKEFILE"
           done
           ! grep -Eq -- '(^|[[:space:]])-(base64|nohup|timeout)([[:space:]]|$)' "$PASSWALL_MAKEFILE"
 
