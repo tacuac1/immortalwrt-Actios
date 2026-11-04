@@ -28,7 +28,7 @@ env:
   REPO_URL: https://github.com/lkiuyu/immortalwrt.git
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  FIRMWARE_VERSION: v3.1.19
+  FIRMWARE_VERSION: v3.1.20
   PASSWALL_LUCI_URL: https://github.com/Openwrt-Passwall/openwrt-passwall.git
   PASSWALL_PACKAGES_URL: https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
 
@@ -308,6 +308,43 @@ jobs:
           mkdir -p package/passwall
           cp -a "$PASSWALL_LUCI_DIR" package/passwall/luci-app-passwall
           cp -a "$XRAY_DIR" package/passwall/xray-core
+          PASSWALL_MAKEFILE=package/passwall/luci-app-passwall/Makefile
+          # This snapshot intentionally installs only the LuCI + Xray path.
+          # The current PassWall recipe lists optional tools whose package
+          # definitions are not present in the selected feeds; leaving them in
+          # DEPENDS makes apk reject the entire rootfs at package/install.
+          for missing_dep in \
+            chinadns-ng \
+            coreutils \
+            coreutils-base64 \
+            coreutils-nohup \
+            coreutils-timeout \
+            curl \
+            dns2socks \
+            luci-compat \
+            luci-lib-jsonc \
+            luci-lua-runtime \
+            lyaml \
+            microsocks \
+            tcping; do
+            sed -E -i "s/\\+${missing_dep}([[:space:]]*)/\\1/g" "$PASSWALL_MAKEFILE"
+          done
+          for missing_dep in \
+            chinadns-ng \
+            coreutils \
+            coreutils-base64 \
+            coreutils-nohup \
+            coreutils-timeout \
+            curl \
+            dns2socks \
+            luci-compat \
+            luci-lib-jsonc \
+            luci-lua-runtime \
+            lyaml \
+            microsocks \
+            tcping; do
+            ! grep -Fq -- "+${missing_dep}" "$PASSWALL_MAKEFILE"
+          done
 
       - name: Configure UFI-001C, LuCI, USB ADB and RNDIS
         working-directory: openwrt
